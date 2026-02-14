@@ -17,6 +17,9 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.function.Function;
+
+import javax.naming.Context;
 
 /**
  * Wrapper class for Method and Constructor instances to cache getParameterTypes() results, recover
@@ -281,8 +284,7 @@ final class MemberBox implements Serializable {
             if (e instanceof ContinuationPending) throw (ContinuationPending) e;
 
             // HtmlUnit
-            if (e instanceof RhinoException) throw Context.throwAsScriptRuntimeEx(e);
-            else throw new RuntimeException("Exception invoking " + method.getName(), e);
+            throw Context.throwAsScriptRuntimeEx(e);
         } catch (IllegalArgumentException iae) {
             StringBuilder builder = new StringBuilder();
             for (Object arg : args) {
