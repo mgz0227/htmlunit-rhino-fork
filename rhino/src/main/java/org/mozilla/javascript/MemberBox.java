@@ -17,9 +17,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.function.Function;
 
-import javax.naming.Context;
 
 /**
  * Wrapper class for Method and Constructor instances to cache getParameterTypes() results, recover
