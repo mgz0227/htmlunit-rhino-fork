@@ -36,7 +36,7 @@ public interface VarScope extends Scriptable, ConstProperties<Scriptable>, Seria
     }
 
     @Override
-    default void setParentScope(Scriptable parent) {
+    default void setParentScope(VarScope parent) {
         Kit.codeBug("Attempt to change parent of scope.");
     }
 
