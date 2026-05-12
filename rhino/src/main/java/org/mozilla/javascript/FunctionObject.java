@@ -180,6 +180,7 @@ public class FunctionObject extends BaseFunction {
         if (type == ScriptRuntime.BooleanClass || type == Boolean.TYPE) return JAVA_BOOLEAN_TYPE;
         if (type == ScriptRuntime.DoubleClass || type == Double.TYPE) return JAVA_DOUBLE_TYPE;
         if (ScriptRuntime.ScriptableClass.isAssignableFrom(type)) return JAVA_SCRIPTABLE_TYPE;
+        if (ScriptRuntime.VarScopeClass.isAssignableFrom(type)) return JAVA_VARSCOPE_TYPE;
         if (type == ScriptRuntime.ObjectClass) return JAVA_OBJECT_TYPE;
 
         // Note that the long type is not supported; see the javadoc for
@@ -516,8 +517,8 @@ public class FunctionObject extends BaseFunction {
      * new objects.
      */
     @Override
-    public Scriptable createObject(Context cx, Scriptable scope) {
-        // HtmlUnit if (member.isCtor() || parmsLength == VARARGS_CTOR) {
+    public Scriptable createObject(Context cx, VarScope scope) {
+        // if (member.isCtor() || parmsLength == VARARGS_CTOR) {
         if (member.isCtor() || parmsLength == VARARGS_CTOR || parmsLength == VARARGS_CTOR_WITH_SCOPE) {
             return null;
         }
@@ -578,6 +579,7 @@ public class FunctionObject extends BaseFunction {
     public static final int JAVA_DOUBLE_TYPE = 4;
     public static final int JAVA_SCRIPTABLE_TYPE = 5;
     public static final int JAVA_OBJECT_TYPE = 6;
+    public static final int JAVA_VARSCOPE_TYPE = 7;
 
     MemberBox member;
     private String functionName;
