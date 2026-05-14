@@ -9,6 +9,7 @@ package org.mozilla.javascript;
 import static org.mozilla.javascript.ScriptableObject.PERMANENT;
 import static org.mozilla.javascript.ScriptableObject.READONLY;
 import static org.mozilla.javascript.UniqueTag.DOUBLE_MARK;
+import static org.mozilla.javascript.UniqueTag.NOT_FOUND;
 
 import java.io.PrintStream;
 import java.io.Serializable;
@@ -541,24 +542,22 @@ public final class Interpreter extends Icode implements Evaluator {
         public void delete(int index) {}
 
         @Override
-        public Object get(String name, Scriptable start) {
+        public void delete(Symbol key) {}
+
+        @Override
+        public Object get(String name, VarScope scope) {
             int offset = getOffsets().getOrDefault(name, -1);
             return offset >= 0 ? frame.getFromVars(offset) : NOT_FOUND;
         }
 
         @Override
-        public Object get(int index, Scriptable start) {
+        public Object get(int index, VarScope scope) {
             return NOT_FOUND;
         }
 
         @Override
-        public String getClassName() {
-            return "debugscope";
-        }
-
-        @Override
-        public Object getDefaultValue(Class<?> hint) {
-            return null;
+        public Object get(Symbol key, VarScope scope) {
+            return NOT_FOUND;
         }
 
         @Override
@@ -572,27 +571,22 @@ public final class Interpreter extends Icode implements Evaluator {
         }
 
         @Override
-        public Scriptable getPrototype() {
-            return null;
-        }
-
-        @Override
-        public boolean has(String name, Scriptable start) {
+        public boolean has(String name, VarScope start) {
             return getOffsets().containsKey(name);
         }
 
         @Override
-        public boolean has(int index, Scriptable start) {
+        public boolean has(int index, VarScope start) {
             return false;
         }
 
         @Override
-        public boolean hasInstance(Scriptable instance) {
+        public boolean has(Symbol key, VarScope start) {
             return false;
         }
 
         @Override
-        public void put(String name, Scriptable start, Object value) {
+        public void put(String name, VarScope start, Object value) {
             int offset = getOffsets().getOrDefault(name, -1);
             if (offset >= 0) {
                 frame.setInVars(offset, value);
@@ -600,22 +594,17 @@ public final class Interpreter extends Icode implements Evaluator {
         }
 
         @Override
-        public void put(int index, Scriptable start, Object value) {
+        public void put(int index, VarScope start, Object value) {
             // Do nothing.
         }
 
         @Override
-        public void setParentScope(VarScope parent) {
+        public void put(Symbol key, VarScope start, Object value) {
             // Do nothing.
         }
 
         @Override
-        public void setPrototype(Scriptable prototype) {
-            // Do nothing.
-        }
-
-        @Override
-        public void defineConst(String name, Scriptable start) {
+        public void defineConst(String name, VarScope start) {
             // TODO Auto-generated method stub
 
         }
@@ -632,7 +621,7 @@ public final class Interpreter extends Icode implements Evaluator {
         }
 
         @Override
-        public void putConst(String name, Scriptable start, Object value) {
+        public void putConst(String name, VarScope start, Object value) {
             // TODO Auto-generated method stub
 
         }
@@ -716,53 +705,54 @@ public final class Interpreter extends Icode implements Evaluator {
         }
     }
 
-    private static class CompilationResult<T extends ScriptOrFn<T>> {
+    private static class InterpreterCompilationResult<T extends ScriptOrFn<T>>
+            implements CompilationResult<T> {
         private final JSDescriptor<T> descriptor;
         private final Scriptable homeObject;
 
-        CompilationResult(JSDescriptor<T> descriptor, Scriptable homeObject) {
+        InterpreterCompilationResult(JSDescriptor<T> descriptor, Scriptable homeObject) {
             this.descriptor = descriptor;
             this.homeObject = homeObject;
+        }
+
+        @Override
+        public DebuggableScript getDebuggableScript() {
+            return descriptor;
         }
     }
 
     @Override
-    @SuppressWarnings("unchecked")
-    public Object compile(
-            CompilerEnvirons compilerEnv,
-            ScriptNode tree,
-            String rawSource,
-            boolean returnFunction) {
-        CodeGenerator<?> cgen = new CodeGenerator<>();
-        var itsData = cgen.compile(compilerEnv, tree, rawSource, returnFunction);
-        return new CompilationResult(itsData, compilerEnv.homeObject());
+    public CompilationResult<JSScript> compileScript(
+            CompilerEnvirons compilerEnv, ScriptNode tree, String rawSource) {
+        CodeGenerator<JSScript> cgen = new CodeGenerator<>();
+        JSDescriptor<JSScript> itsData = cgen.compile(compilerEnv, tree, rawSource, false);
+        return new InterpreterCompilationResult<>(itsData, compilerEnv.homeObject());
     }
 
     @Override
-    @SuppressWarnings("unchecked")
-    public DebuggableScript getDebuggableScript(Object bytecode) {
-        return ((CompilationResult<?>) bytecode).descriptor;
+    public CompilationResult<JSFunction> compileFunction(
+            CompilerEnvirons compilerEnv, ScriptNode tree, String rawSource) {
+        CodeGenerator<JSFunction> cgen = new CodeGenerator<>();
+        JSDescriptor<JSFunction> itsData = cgen.compile(compilerEnv, tree, rawSource, true);
+        return new InterpreterCompilationResult<>(itsData, compilerEnv.homeObject());
     }
 
     @Override
-    @SuppressWarnings("unchecked")
-    public Script createScriptObject(Object bytecode, Object staticSecurityDomain) {
-        var compilerResult = (CompilationResult<JSScript>) bytecode;
-        return JSFunction.createScript(
-                compilerResult.descriptor, compilerResult.homeObject, staticSecurityDomain);
+    public Script createScriptObject(
+            CompilationResult<JSScript> compiled, Object staticSecurityDomain) {
+        var result = (InterpreterCompilationResult<JSScript>) compiled;
+        return JSFunction.createScript(result.descriptor, result.homeObject, staticSecurityDomain);
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Function createFunctionObject(
-            Context cx, VarScope scope, Object bytecode, Object staticSecurityDomain) {
-        var compilerResult = (CompilationResult<JSFunction>) bytecode;
+            Context cx,
+            VarScope scope,
+            CompilationResult<JSFunction> compiled,
+            Object staticSecurityDomain) {
+        var result = (InterpreterCompilationResult<JSFunction>) compiled;
         return JSFunction.createFunction(
-                cx,
-                scope,
-                compilerResult.descriptor,
-                compilerResult.homeObject,
-                staticSecurityDomain);
+                cx, scope, result.descriptor, result.homeObject, staticSecurityDomain);
     }
 
     private static int getShort(byte[] iCode, int pc) {
@@ -1244,7 +1234,7 @@ public final class Interpreter extends Icode implements Evaluator {
     }
 
     public static Object resumeGenerator(
-            Context cx, Scriptable scope, int operation, Object savedState, Object value) {
+            Context cx, VarScope scope, int operation, Object savedState, Object value) {
         CallFrame frame = (CallFrame) savedState;
         CallFrame activeFrame = frame.shallowCloneFrozen((CallFrame) cx.lastInterpreterFrame);
         try {
@@ -2898,6 +2888,7 @@ public final class Interpreter extends Icode implements Evaluator {
 
     private static class DoSetConst extends InstructionClass {
         @Override
+        @SuppressWarnings("unchecked")
         NewState execute(Context cx, CallFrame frame, InterpreterState state, int op) {
             final Object[] stack = frame.stack;
             final double[] sDbl = frame.sDbl;
@@ -5091,7 +5082,7 @@ public final class Interpreter extends Icode implements Evaluator {
                 // However, when called from interpretLoop() as part of
                 // restarting a continuation, it can also be a WIthScope if
                 // the continuation was captured within a "with" or "catch"
-                // block ("catch" implicitly uses NativeWith to create a scope
+                // block ("catch" implicitly uses WithScope to create a scope
                 // to expose the exception variable).
                 for (; ; ) {
                     if (scope instanceof WithScope) {
