@@ -378,6 +378,18 @@ public class Context implements Closeable {
      */
     public static final int FEATURE_HTMLUNIT_ARRAY_SORT_COMPERATOR_ACCEPTS_BOOL = 106;
 
+    /**
+     * Special to legado's fork.
+     *
+     * <p>Non-strict functions invoked with an undefined/null {@code this} receive the global
+     * object of the current top call scope (dynamic, pre-realm-separation Rhino behavior)
+     * instead of the function's declaration realm global. Shared-library functions evaluated
+     * in a parent scope rely on {@code this} exposing the per-call execution bindings.
+     *
+     * <p>By default {@link #hasFeature(int)} returns false.
+     */
+    public static final int FEATURE_LEGADO_DYNAMIC_DEFAULT_THIS = 120;
+
     public static final String languageVersionProperty = "language version";
     public static final String errorReporterProperty = "error reporter";
 

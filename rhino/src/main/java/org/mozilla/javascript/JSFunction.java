@@ -150,6 +150,19 @@ public class JSFunction extends BaseFunction implements ScriptOrFn<JSFunction> {
         if (descriptor.hasLexicalThis()) {
             return lexicalThis;
         } else if (!descriptor.isStrict() && (thisObj == null || Undefined.isUndefined(thisObj))) {
+            // legado
+            Context cx = Context.getCurrentContext();
+            if (cx != null
+                    && cx.hasFeature(Context.FEATURE_LEGADO_DYNAMIC_DEFAULT_THIS)
+                    && ScriptRuntime.hasTopCall(cx)) {
+                Scriptable dynThis =
+                        ScriptableObject.getTopLevelScope(ScriptRuntime.getTopCallScope(cx))
+                                .getGlobalThis();
+                if (dynThis != null) {
+                    return dynThis;
+                }
+            }
+            // end legado
             var res = ScriptableObject.getTopLevelScope(getDeclarationScope()).getGlobalThis();
             return res;
         } else {
