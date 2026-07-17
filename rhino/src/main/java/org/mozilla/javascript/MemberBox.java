@@ -9,6 +9,7 @@ package org.mozilla.javascript;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.io.Serial;
 import java.io.Serializable;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.AccessibleObject;
@@ -26,7 +27,7 @@ import java.lang.reflect.Modifier;
  * @author Igor Bukanov
  */
 final class MemberBox implements Serializable {
-    private static final long serialVersionUID = 8260700214130563887L;
+    @Serial private static final long serialVersionUID = 8260700214130563887L;
 
     private transient Member memberObject;
     private transient Class<?>[] argTypes;
@@ -37,14 +38,18 @@ final class MemberBox implements Serializable {
     transient Function asSetterFunction;
     transient Object delegateTo;
 
+    final VarScope scope;
+
     private static final NullabilityDetector nullDetector =
             ScriptRuntime.loadOneServiceImplementation(NullabilityDetector.class);
 
-    MemberBox(Method method) {
+    MemberBox(VarScope scope, Method method) {
+        this.scope = scope;
         init(method);
     }
 
-    MemberBox(Constructor<?> constructor) {
+    MemberBox(VarScope scope, Constructor<?> constructor) {
+        this.scope = scope;
         init(constructor);
     }
 
@@ -169,7 +174,7 @@ final class MemberBox implements Serializable {
     }
 
     /** Function returned by calls to __lookupGetter__ */
-    Function asGetterFunction(final String name, final Scriptable scope) {
+    Function asGetterFunction(final String name) {
         // Note: scope is the scriptable this function is related to; therefore this function
         // is constant for this member box.
         // Because of this we can cache the function in the attribute
@@ -179,7 +184,7 @@ final class MemberBox implements Serializable {
                         @Override
                         public Object call(
                                 Context cx,
-                                Scriptable callScope,
+                                VarScope callScope,
                                 Scriptable thisObj,
                                 Object[] originalArgs) {
                             MemberBox nativeGetter = MemberBox.this;
@@ -201,7 +206,7 @@ final class MemberBox implements Serializable {
     }
 
     /** Function returned by calls to __lookupSetter__ */
-    Function asSetterFunction(final String name, final Scriptable scope) {
+    Function asSetterFunction(final String name) {
         // Note: scope is the scriptable this function is related to; therefore this function
         // is constant for this member box.
         // Because of this we can cache the function in the attribute
@@ -212,7 +217,7 @@ final class MemberBox implements Serializable {
                         @Override
                         public Object call(
                                 Context cx,
-                                Scriptable callScope,
+                                VarScope callScope,
                                 Scriptable thisObj,
                                 Object[] originalArgs) {
                             MemberBox nativeSetter = MemberBox.this;
@@ -220,7 +225,7 @@ final class MemberBox implements Serializable {
                                     originalArgs.length > 0
                                             ? FunctionObject.convertArg(
                                                     cx,
-                                                    thisObj,
+                                                    callScope,
                                                     originalArgs[0],
                                                     setterTypeTag,
                                                     nativeSetter.getArgNullability().isNullable(0))
@@ -379,6 +384,7 @@ final class MemberBox implements Serializable {
         return null;
     }
 
+    @Serial
     private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
         in.defaultReadObject();
         boolean isMethod = in.readBoolean();
@@ -402,6 +408,7 @@ final class MemberBox implements Serializable {
         }
     }
 
+    @Serial
     private void writeObject(ObjectOutputStream out) throws IOException {
         out.defaultWriteObject();
         out.writeBoolean(memberObject instanceof Method);

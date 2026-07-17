@@ -2096,13 +2096,6 @@ public final class IRFactory {
             String name = child.getString();
             if ("eval".equals(name)) {
                 type = Node.SPECIALCALL_EVAL;
-            } else if ("With".equals(name)) {
-                type = Node.SPECIALCALL_WITH;
-            }
-        } else if (child.getType() == Token.GETPROP) {
-            String name = child.getLastChild().getString();
-            if ("eval".equals(name)) {
-                type = Node.SPECIALCALL_EVAL;
             }
         }
         Node node = new Node(nodeType, child);

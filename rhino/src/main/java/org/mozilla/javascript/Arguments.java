@@ -6,6 +6,8 @@
 
 package org.mozilla.javascript;
 
+import java.io.Serial;
+
 /**
  * This class implements the "arguments" object.
  *
@@ -15,7 +17,7 @@ package org.mozilla.javascript;
  * @author Norris Boyd
  */
 class Arguments extends ScriptableObject {
-    private static final long serialVersionUID = 4275508002492040609L;
+    @Serial private static final long serialVersionUID = 4275508002492040609L;
 
     private static final String CLASS_NAME = "Arguments";
 
@@ -35,7 +37,7 @@ class Arguments extends ScriptableObject {
     public Arguments(NativeCall activation, Context cx) {
         this.activation = activation;
 
-        Scriptable parent = activation.getParentScope();
+        VarScope parent = activation.getParentScope();
         setParentScope(parent);
         setPrototype(ScriptableObject.getObjectPrototype(parent));
 
@@ -45,15 +47,14 @@ class Arguments extends ScriptableObject {
         JSFunction f = activation.function;
         calleeObj = f;
 
-        defineProperty(
-                SymbolKey.ITERATOR,
+        var iter =
                 TopLevel.getBuiltinPrototype(
-                                ScriptableObject.getTopLevelScope(parent), TopLevel.Builtins.Array)
-                        .get("values", parent),
-                ScriptableObject.DONTENUM);
+                        ScriptableObject.getTopLevelScope(parent), TopLevel.Builtins.Array);
+
+        defineProperty(SymbolKey.ITERATOR, iter.get("values", iter), ScriptableObject.DONTENUM);
         defineProperty("length", lengthObj, ScriptableObject.DONTENUM);
 
-        if (activation.isStrict) {
+        if (f.isStrict()) {
             // ECMAScript2015
             // 9.4.4.6 CreateUnmappedArgumentsObject(argumentsList)
             //   8. Perform DefinePropertyOrThrow(obj, "caller", PropertyDescriptor {[[Get]]:
@@ -151,15 +152,14 @@ class Arguments extends ScriptableObject {
     }
 
     private boolean sharedWithActivation(int index) {
-        Context cx = Context.getContext();
-        if (cx.isStrictMode()) {
-            return false;
-        }
         // HtmlUnit
         if (activation == null) return false;
         // end HtmlUnit
 
         JSFunction f = activation.function;
+        if (f.isStrict()) {
+            return false;
+        }
 
         // Check if default arguments are present
         if (f == null || f.hasDefaultParameters()) {
@@ -211,7 +211,8 @@ class Arguments extends ScriptableObject {
     }
 
     @Override
-    Object[] getIds(CompoundOperationMap map, boolean getNonEnumerable, boolean getSymbols) {
+    Object[] getIds(
+            CompoundOperationMap<Scriptable> map, boolean getNonEnumerable, boolean getSymbols) {
         Object[] ids = super.getIds(map, getNonEnumerable, getSymbols);
         if (args.length != 0) {
             boolean[] present = new boolean[args.length];

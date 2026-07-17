@@ -35,17 +35,16 @@ public abstract class JSCode<T extends ScriptOrFn<T>> implements JSCodeExec<T>, 
 
     private static class NotCallable extends JSCode<JSFunction> implements Serializable {
 
-        private static final long serialVersionUID = 2691205302914111400L;
+        private static final long serialVersionUID = -31340315773728063L;
 
         @Override
         public Object execute(
-                Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+                Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
             throw ScriptRuntime.typeError("Not callable as function");
         }
 
         @Override
-        public Object resume(
-                Context cx, JSFunction f, Object state, Scriptable s, int op, Object v) {
+        public Object resume(Context cx, JSFunction f, Object state, VarScope s, int op, Object v) {
             return null;
         }
     }

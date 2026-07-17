@@ -6,6 +6,7 @@
 
 package org.mozilla.javascript;
 
+import java.io.Serial;
 import org.mozilla.javascript.lc.ReflectUtils;
 import org.mozilla.javascript.lc.member.ExecutableBox;
 
@@ -21,7 +22,7 @@ import org.mozilla.javascript.lc.member.ExecutableBox;
  * @see NativeJavaClass
  */
 public class NativeJavaConstructor extends BaseFunction {
-    private static final long serialVersionUID = -8149253217482668463L;
+    @Serial private static final long serialVersionUID = -8149253217482668463L;
 
     ExecutableBox ctor;
 
@@ -30,7 +31,7 @@ public class NativeJavaConstructor extends BaseFunction {
     }
 
     @Override
-    public Object call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+    public Object call(Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
         return NativeJavaClass.constructSpecific(cx, scope, args, ctor);
     }
 

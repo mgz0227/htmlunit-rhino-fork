@@ -60,9 +60,6 @@ import org.mozilla.javascript.config.RhinoConfig;
  *     {
  *         // Turn on maximum compatibility with MSIE scripts
  *         switch (featureIndex) {
- *             case {@link Context#FEATURE_NON_ECMA_GET_YEAR}:
- *                 return true;
- *
  *             case {@link Context#FEATURE_MEMBER_EXPR_AS_FUNCTION_NAME}:
  *                 return true;
  *
@@ -90,7 +87,7 @@ import org.mozilla.javascript.config.RhinoConfig;
  *     }
  *
  *     // Override {@link #doTopCall(Callable,
- * Context, Scriptable,
+ * Context, VarScope,
  * Scriptable, Object[])}
  *     protected Object doTopCall(Callable callable,
  *                                Context cx, Scriptable scope,
@@ -335,7 +332,7 @@ public class ContextFactory {
      * perform the real call. In this way execution of any script happens inside this function.
      */
     protected Object doTopCall(
-            Callable callable, Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+            Callable callable, Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
         Object result = callable.call(cx, scope, thisObj, args);
         return result instanceof ConsString ? result.toString() : result;
     }
@@ -345,7 +342,7 @@ public class ContextFactory {
      * will create the first stack frame with scriptable code, it calls this method to perform the
      * real call. In this way execution of any script happens inside this function.
      */
-    protected Object doTopCall(Script script, Context cx, Scriptable scope, Scriptable thisObj) {
+    protected Object doTopCall(Script script, Context cx, VarScope scope, Scriptable thisObj) {
         Object result = script.exec(cx, scope, thisObj);
         return result instanceof ConsString ? result.toString() : result;
     }
@@ -434,7 +431,7 @@ public class ContextFactory {
      * with the thread during call to {@link ContextAction#run(Context)}.
      *
      * @see ContextFactory#call(ContextAction)
-     * @see Context#call(ContextFactory factory, Callable callable, Scriptable scope, Scriptable
+     * @see Context#call(ContextFactory factory, Callable callable, VarScope scope, Scriptable
      *     thisObj, Object[] args)
      */
     public final <T> T call(ContextAction<T> action) {

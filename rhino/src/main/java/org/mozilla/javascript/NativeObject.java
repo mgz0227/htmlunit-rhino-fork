@@ -9,6 +9,7 @@ package org.mozilla.javascript;
 import static org.mozilla.javascript.ClassDescriptor.Destination.CTOR;
 import static org.mozilla.javascript.ClassDescriptor.Destination.PROTO;
 
+import java.io.Serial;
 import java.util.AbstractCollection;
 import java.util.AbstractSet;
 import java.util.ArrayList;
@@ -28,7 +29,7 @@ import org.mozilla.javascript.ScriptRuntime.StringIdOrIndex;
  * @author Norris Boyd
  */
 public class NativeObject extends ScriptableObject implements Map {
-    private static final long serialVersionUID = -6345305608474346996L;
+    @Serial private static final long serialVersionUID = -6345305608474346996L;
 
     private static final Object OBJECT_TAG = "Object";
     private static final String CLASS_NAME = "Object";
@@ -94,7 +95,7 @@ public class NativeObject extends ScriptableObject implements Map {
                         .build();
     }
 
-    static JSFunction init(Context cx, Scriptable s, boolean sealed) {
+    static JSFunction init(Context cx, VarScope s, boolean sealed) {
         var desc = cx.version >= Context.VERSION_ES6 ? ES6_DESCRIPTOR : LEGACY_DESCRIPTOR;
         return desc.buildConstructor(cx, s, new NativeObject(), sealed);
     }
@@ -110,7 +111,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Scriptable js_constructorCall(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         if (args.length == 0 || args[0] == null || Undefined.isUndefined(args[0])) {
             return cx.newObject(f.getDeclarationScope());
         }
@@ -118,7 +119,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Scriptable js_constructor(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         if (args.length == 0 || args[0] == null || Undefined.isUndefined(args[0])) {
             return cx.newObject(f.getDeclarationScope());
         }
@@ -126,7 +127,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_toLocaleString(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         if (thisObj == null) {
             throw ScriptRuntime.notFunctionError(null);
         }
@@ -140,12 +141,12 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_toString(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         return ScriptRuntime.defaultObjectToString((Scriptable) thisObj);
     }
 
     private static Object js_valueOf(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         if (cx.getLanguageVersion() >= Context.VERSION_1_8
                 && (thisObj == null || Undefined.isUndefined(thisObj))) {
             throw ScriptRuntime.typeErrorById(
@@ -155,7 +156,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_hasOwnProperty(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         if (cx.getLanguageVersion() >= Context.VERSION_1_8
                 && (thisObj == null || Undefined.isUndefined(thisObj))) {
             throw ScriptRuntime.typeErrorById(
@@ -168,7 +169,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_propertyIsEnumerable(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         if (cx.getLanguageVersion() >= Context.VERSION_1_8
                 && (thisObj == null || Undefined.isUndefined(thisObj))) {
             throw ScriptRuntime.typeErrorById(
@@ -213,7 +214,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_isPrototypeOf(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         if (cx.getLanguageVersion() >= Context.VERSION_1_8
                 && (thisObj == null || Undefined.isUndefined(thisObj))) {
             throw ScriptRuntime.typeErrorById(
@@ -239,8 +240,7 @@ public class NativeObject extends ScriptableObject implements Map {
         Let O be ? ToObject(this value).
         2. Return ? O.[[GetPrototypeOf]]().
         */
-        ScriptableObject o = (ScriptableObject) ScriptRuntime.toObject(thisObj, thisObj);
-        return o.getPrototype();
+        return thisObj.getPrototype();
     }
 
     public static void js_protoSetter(Scriptable thisObj, Object proto) {
@@ -271,17 +271,17 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_defineGetter(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         return js_defineGetterOrSetter(cx, s, false, thisObj, args);
     }
 
     private static Object js_defineSetter(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         return js_defineGetterOrSetter(cx, s, true, thisObj, args);
     }
 
     private static Object js_defineGetterOrSetter(
-            Context cx, Scriptable scope, boolean isSetter, Object thisObj, Object[] args) {
+            Context cx, VarScope scope, boolean isSetter, Object thisObj, Object[] args) {
         if (args.length < 2 || !(args[1] instanceof Callable)) {
             Object badArg = (args.length >= 2 ? args[1] : Undefined.instance);
             throw ScriptRuntime.notFunctionError(badArg);
@@ -303,17 +303,17 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_lookupGetter(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         return js_lookupGetterOrSetter(cx, s, false, thisObj, args);
     }
 
     private static Object js_lookupSetter(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         return js_lookupGetterOrSetter(cx, s, true, thisObj, args);
     }
 
     private static Object js_lookupGetterOrSetter(
-            Context cx, Scriptable scope, boolean isSetter, Object thisObj, Object[] args) {
+            Context cx, VarScope scope, boolean isSetter, Object thisObj, Object[] args) {
         if (args.length < 1 || !(thisObj instanceof ScriptableObject)) return Undefined.instance;
 
         ScriptableObject so = (ScriptableObject) thisObj;
@@ -321,7 +321,7 @@ public class NativeObject extends ScriptableObject implements Map {
         int index = s.stringId != null ? 0 : s.index;
         Object gs;
         for (; ; ) {
-            gs = so.getGetterOrSetter(s.stringId, index, scope, isSetter);
+            gs = so.getGetterOrSetter(s.stringId, index, so, isSetter);
             if (gs != null) {
                 break;
             }
@@ -344,14 +344,14 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_getPrototypeOf(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         Scriptable obj = getCompatibleObject(cx, s, arg);
         return obj.getPrototype();
     }
 
     private static Object js_setPrototypeOf(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         if (args.length < 2) {
             throw ScriptRuntime.typeErrorById(
                     "msg.method.missing.parameter",
@@ -397,7 +397,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_keys(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         Scriptable obj = getCompatibleObject(cx, f.getDeclarationScope(), arg);
         Object[] ids = obj.getIds();
@@ -408,7 +408,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_entries(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         Scriptable obj = getCompatibleObject(cx, s, arg);
         Object[] ids = obj.getIds();
@@ -436,7 +436,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_fromEntries(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         arg = getCompatibleObject(cx, f.getDeclarationScope(), arg);
         Scriptable obj = cx.newObject(f.getDeclarationScope());
@@ -459,7 +459,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_values(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         Scriptable obj = getCompatibleObject(cx, s, arg);
         Object[] ids = obj.getIds();
@@ -485,14 +485,14 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_hasOwn(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         Object propertyName = args.length < 2 ? Undefined.instance : args[1];
         return AbstractEcmaObjectOperations.hasOwnProperty(cx, arg, propertyName);
     }
 
     private static Object js_getOwnPropertyNames(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         Scriptable s2 = getCompatibleObject(cx, s, arg);
         ScriptableObject obj = ensureScriptableObject(s2);
@@ -507,7 +507,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_getOwnPropertySymbols(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         Scriptable s2 = getCompatibleObject(cx, s, arg);
         ScriptableObject obj = ensureScriptableObject(s2);
@@ -525,7 +525,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_getOwnPropDesc(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         // TODO(norris): There's a deeper issue here if
         // arg instanceof Scriptable. Should we create a new
@@ -538,7 +538,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_getOwnPropDescs(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         Scriptable s2 = getCompatibleObject(cx, s, arg);
         ScriptableObject obj = ensureScriptableObject(s2);
@@ -550,21 +550,21 @@ public class NativeObject extends ScriptableObject implements Map {
         }
         for (Object key : ids) {
             var desc = obj.getOwnPropertyDescriptor(cx, key);
-            if (desc == null) {
-                continue;
-            } else if (key instanceof Symbol) {
-                descs.put((Symbol) key, descs, desc.toObject(s));
-            } else if (key instanceof Integer) {
-                descs.put((Integer) key, descs, desc.toObject(s));
-            } else {
-                descs.put(ScriptRuntime.toString(key), descs, desc.toObject(s));
+            if (desc != null) {
+                if (key instanceof Symbol) {
+                    descs.put((Symbol) key, descs, desc.toObject(s));
+                } else if (key instanceof Integer) {
+                    descs.put((Integer) key, descs, desc.toObject(s));
+                } else {
+                    descs.put(ScriptRuntime.toString(key), descs, desc.toObject(s));
+                }
             }
         }
         return descs;
     }
 
     private static Object js_defineProperty(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         ScriptableObject obj = ensureScriptableObject(arg);
         Object name = args.length < 2 ? Undefined.instance : args[1];
@@ -576,7 +576,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_isExtensible(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         if (cx.getLanguageVersion() >= Context.VERSION_ES6 && !(arg instanceof ScriptableObject)) {
             return Boolean.FALSE;
@@ -587,7 +587,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_preventExtensions(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         if (cx.getLanguageVersion() >= Context.VERSION_ES6 && !(arg instanceof ScriptableObject)) {
             return arg;
@@ -601,7 +601,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_defineProperties(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         ScriptableObject obj = ensureScriptableObject(arg);
         Object propsObj = args.length < 2 ? Undefined.instance : args[1];
@@ -611,7 +611,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_create(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         Scriptable obj = (arg == null) ? null : ensureScriptable(arg);
 
@@ -628,7 +628,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_isSealed(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         if (cx.getLanguageVersion() >= Context.VERSION_ES6 && !(arg instanceof ScriptableObject)) {
             return Boolean.TRUE;
@@ -639,7 +639,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_isFrozen(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         if (cx.getLanguageVersion() >= Context.VERSION_ES6 && !(arg instanceof ScriptableObject)) {
             return Boolean.TRUE;
@@ -650,7 +650,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_seal(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         if (cx.getLanguageVersion() >= Context.VERSION_ES6 && !(arg instanceof ScriptableObject)) {
             return arg;
@@ -666,7 +666,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_freeze(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object arg = args.length < 1 ? Undefined.instance : args[0];
         if (cx.getLanguageVersion() >= Context.VERSION_ES6 && !(arg instanceof ScriptableObject)) {
             return arg;
@@ -683,7 +683,7 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_assign(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Scriptable targetObj;
         if (args.length > 0) {
             targetObj = ScriptRuntime.toObject(cx, s, args[0]);
@@ -704,18 +704,33 @@ public class NativeObject extends ScriptableObject implements Map {
             } else {
                 ids = sourceObj.getIds();
             }
+            // Issue #2126: when the target is a NativeArray,
+            // AbstractEcmaObjectOperations.put() routes through
+            // ScriptableObject.putOwnProperty()/putImpl(), which bypasses
+            // NativeArray.put(int) and thus fails to update the array length.
+            // The slots get written but stay invisible (length stays 0).
+            // Short-circuit to the array's own put() so length is maintained.
+            boolean targetIsArray = targetObj instanceof NativeArray;
             for (Object key : ids) {
                 if (key instanceof Integer) {
                     int intId = (Integer) key;
                     if (sourceObj.has(intId, sourceObj) && isEnumerable(intId, sourceObj)) {
                         Object val = sourceObj.get(intId, sourceObj);
-                        AbstractEcmaObjectOperations.put(cx, targetObj, intId, val, true);
+                        if (targetIsArray) {
+                            targetObj.put(intId, targetObj, val);
+                        } else {
+                            AbstractEcmaObjectOperations.put(cx, targetObj, intId, val, true);
+                        }
                     }
                 } else if (key instanceof String) {
                     String stringId = ScriptRuntime.toString(key);
                     if (sourceObj.has(stringId, sourceObj) && isEnumerable(stringId, sourceObj)) {
                         Object val = sourceObj.get(stringId, sourceObj);
-                        AbstractEcmaObjectOperations.put(cx, targetObj, stringId, val, true);
+                        if (targetIsArray) {
+                            targetObj.put(stringId, targetObj, val);
+                        } else {
+                            AbstractEcmaObjectOperations.put(cx, targetObj, stringId, val, true);
+                        }
                     }
                 }
             }
@@ -739,14 +754,14 @@ public class NativeObject extends ScriptableObject implements Map {
     }
 
     private static Object js_is(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object a1 = args.length < 1 ? Undefined.instance : args[0];
         Object a2 = args.length < 2 ? Undefined.instance : args[1];
         return ScriptRuntime.wrapBoolean(ScriptRuntime.same(a1, a2));
     }
 
     private static Object js_groupBy(
-            Context cx, JSFunction f, Object nt, Scriptable s, Object thisObj, Object[] args) {
+            Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
         Object items = args.length < 1 ? Undefined.instance : args[0];
         Object callback = args.length < 2 ? Undefined.instance : args[1];
 
@@ -821,7 +836,7 @@ public class NativeObject extends ScriptableObject implements Map {
         }
     }
 
-    private static Scriptable getCompatibleObject(Context cx, Scriptable scope, Object arg) {
+    private static Scriptable getCompatibleObject(Context cx, VarScope scope, Object arg) {
         if (cx.getLanguageVersion() >= Context.VERSION_ES6) {
             Scriptable s = ScriptRuntime.toObject(cx, scope, arg);
             return ensureScriptable(s);

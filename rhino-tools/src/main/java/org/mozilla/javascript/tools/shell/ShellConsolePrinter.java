@@ -4,20 +4,21 @@
 
 package org.mozilla.javascript.tools.shell;
 
+import java.io.Serial;
 import java.nio.charset.Charset;
 import org.mozilla.javascript.Context;
 import org.mozilla.javascript.NativeConsole;
 import org.mozilla.javascript.ScriptStackElement;
-import org.mozilla.javascript.Scriptable;
+import org.mozilla.javascript.VarScope;
 
 /** Provide a printer use in console API */
 class ShellConsolePrinter implements NativeConsole.ConsolePrinter {
-    private static final long serialVersionUID = 5869832740127501857L;
+    @Serial private static final long serialVersionUID = 5869832740127501857L;
 
     @Override
     public void print(
             Context cx,
-            Scriptable scope,
+            VarScope scope,
             NativeConsole.Level level,
             Object[] args,
             ScriptStackElement[] stack) {

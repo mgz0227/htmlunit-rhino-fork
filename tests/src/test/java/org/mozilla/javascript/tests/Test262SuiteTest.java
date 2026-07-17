@@ -4,8 +4,8 @@
 
 package org.mozilla.javascript.tests;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mozilla.javascript.drivers.TestUtils.JS_FILE_FILTER;
 import static org.mozilla.javascript.drivers.TestUtils.recursiveListFilesHelper;
 
@@ -31,6 +31,7 @@ import java.util.Map.Entry;
 import java.util.Scanner;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -41,9 +42,11 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mozilla.javascript.Context;
+import org.mozilla.javascript.Context.EvaluationMethod;
 import org.mozilla.javascript.EvaluatorException;
 import org.mozilla.javascript.Kit;
 import org.mozilla.javascript.RhinoException;
+import org.mozilla.javascript.ScopeObject;
 import org.mozilla.javascript.Script;
 import org.mozilla.javascript.ScriptRuntime;
 import org.mozilla.javascript.Scriptable;
@@ -51,7 +54,13 @@ import org.mozilla.javascript.ScriptableObject;
 import org.mozilla.javascript.SymbolKey;
 import org.mozilla.javascript.TopLevel;
 import org.mozilla.javascript.Undefined;
+import org.mozilla.javascript.VarScope;
+import org.mozilla.javascript.debug.DebugFrame;
+import org.mozilla.javascript.debug.DebuggableScript;
+import org.mozilla.javascript.debug.Debugger;
 import org.mozilla.javascript.drivers.TestUtils;
+import org.mozilla.javascript.testutils.Sharding;
+import org.mozilla.javascript.testutils.TestSource;
 import org.mozilla.javascript.tools.SourceReader;
 import org.mozilla.javascript.tools.shell.ShellContextFactory;
 import org.mozilla.javascript.typedarrays.NativeArrayBuffer;
@@ -73,9 +82,12 @@ public class Test262SuiteTest {
     /** The test must be executed just once--in non-strict mode, only. */
     private static final String FLAG_NO_STRICT = "noStrict";
 
-    private static final File testDir = new File("test262/test");
-    private static final String testHarnessDir = "test262/harness/";
+    private static final File testDir;
+    private static final String testHarnessDir;
     private static final String testProperties;
+
+    private static final boolean normalEnabled;
+    private static final boolean debugEnabled;
 
     private static final boolean updateTest262Properties;
     private static final boolean rollUpEnabled;
@@ -106,11 +118,7 @@ public class Test262SuiteTest {
                             "class",
                             "class-fields-private",
                             "class-fields-public",
-                            "default-arg",
                             "new.target",
-                            "object-rest",
-                            "regexp-dotall",
-                            "resizable-arraybuffer",
                             "SharedArrayBuffer",
                             "tail-call-optimization",
                             "Temporal",
@@ -118,14 +126,26 @@ public class Test262SuiteTest {
                             "u180e"));
 
     static {
+        // For portability on all platforms, find the location of the test262 tree
+        // by starting with a well-known file and walking from there.
+        testHarnessDir = TestSource.resolveDirectory("test262/harness/assert.js");
+        var testBase = Path.of(testHarnessDir).getParent();
+        testDir = Path.of(testBase.toString(), "test").toFile();
+
         String propFile = System.getProperty("test262properties");
         testProperties =
-                propFile != null && !propFile.equals("") ? propFile : "testsrc/test262.properties";
+                propFile != null && !propFile.equals("")
+                        ? propFile
+                        : TestSource.resolve("testsrc/test262.properties");
 
         String updateProps = System.getProperty("updateTest262properties");
+        boolean debug = System.getProperty("runTest262Debug") != null;
+        boolean normal = System.getProperty("runTest262NonDebug") != null ? true : !debug;
 
         if (updateProps != null) {
             updateTest262Properties = true;
+            debugEnabled = true;
+            normalEnabled = true;
 
             switch (updateProps) {
                 case "all":
@@ -142,6 +162,8 @@ public class Test262SuiteTest {
             }
         } else {
             updateTest262Properties = rollUpEnabled = statsEnabled = includeUnsupported = false;
+            normalEnabled = normal;
+            debugEnabled = debug;
         }
     }
 
@@ -201,8 +223,24 @@ public class Test262SuiteTest {
     private static final Pattern LINE_SPLITTER =
             Pattern.compile(
                     "(~|(?:\\s*)(?:!|#)(?:\\s*)|\\s+)?(\\S+)(?:[^\\S\\r\\n]+"
-                            + "(?:strict|non-strict|compiled-strict|compiled-non-strict|interpreted-strict|interpreted-non-strict|compiled|interpreted|"
-                            + "\\d+/\\d+ \\(\\d+(?:\\.\\d+)?%%\\)|\\{(?:non-strict|strict|unsupported): \\[.*\\],?\\}))?[^\\S\\r\\n]*(.*)");
+                            + "(?:"
+                            + buildTestModeNames()
+                            + "\\d+/\\d+ \\(\\d+(?:\\.\\d+)?%%\\)|\\{(?:(?:"
+                            + buildTestModeNames()
+                            + "|unsupported: \\[.*\\]),?)+\\}))?[^\\S\\r\\n]*(.*)");
+
+    private static String buildTestModeNames() {
+        var sb = new StringBuilder();
+        sb.append("strict|non-strict");
+        for (var mode : TestMode.values()) {
+            if (mode.shouldRun()) {
+                sb.append('|').append(mode.keyPart()).append('|');
+                sb.append(mode.keyPart()).append("-strict").append('|');
+                sb.append(mode.keyPart()).append("-non-strict");
+            }
+        }
+        return sb.toString();
+    }
 
     /**
      * @see https://github.com/tc39/test262/blob/main/INTERPRETING.md#host-defined-functions
@@ -213,11 +251,11 @@ public class Test262SuiteTest {
             super();
         }
 
-        $262(Scriptable scope, Scriptable prototype) {
+        $262(VarScope scope, Scriptable prototype) {
             super(scope, prototype);
         }
 
-        static $262 init(Context cx, Scriptable scope) {
+        static $262 init(Context cx, VarScope scope) {
             $262 proto = new $262();
             proto.setPrototype(getObjectPrototype(scope));
             proto.setParentScope(scope);
@@ -227,8 +265,8 @@ public class Test262SuiteTest {
             proto.defineProperty(scope, "evalScript", 1, $262::evalScript);
             proto.defineProperty(scope, "detachArrayBuffer", 0, $262::detachArrayBuffer);
 
-            proto.defineProperty(cx, "global", $262::getGlobal, null, DONTENUM | READONLY);
-            proto.defineProperty(cx, "agent", $262::getAgent, null, DONTENUM | READONLY);
+            proto.defineProperty(cx, scope, "global", $262::getGlobal, null, DONTENUM | READONLY);
+            proto.defineProperty(cx, scope, "agent", $262::getAgent, null, DONTENUM | READONLY);
 
             proto.defineProperty(SymbolKey.TO_STRING_TAG, "__262__", DONTENUM | READONLY);
 
@@ -236,7 +274,7 @@ public class Test262SuiteTest {
             return proto;
         }
 
-        static $262 install(ScriptableObject scope, Scriptable parentScope) {
+        static $262 install(ScopeObject scope, Scriptable parentScope) {
             $262 instance = new $262(scope, parentScope);
 
             scope.put("$262", scope, instance);
@@ -245,13 +283,13 @@ public class Test262SuiteTest {
             return instance;
         }
 
-        private static Object gc(Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+        private static Object gc(Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
             System.gc();
             return Undefined.instance;
         }
 
         public static Object evalScript(
-                Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+                Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
             if (args.length == 0) {
                 throw ScriptRuntime.throwError(cx, scope, "not enough args");
             }
@@ -260,17 +298,17 @@ public class Test262SuiteTest {
         }
 
         public static Object getGlobal(Scriptable scriptable) {
-            return scriptable.getParentScope();
+            return ((TopLevel) scriptable.getParentScope()).getGlobalThis();
         }
 
         public static $262 createRealm(
-                Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
-            ScriptableObject realm = (ScriptableObject) cx.initSafeStandardObjects(new TopLevel());
+                Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
+            TopLevel realm = cx.initSafeStandardObjects(new TopLevel());
             return install(realm, thisObj.getPrototype());
         }
 
         public static Object detachArrayBuffer(
-                Context cx, Scriptable scope, Scriptable thisObj, Object[] args) {
+                Context cx, VarScope scope, Scriptable thisObj, Object[] args) {
             Scriptable buf = ScriptRuntime.toObject(scope, args[0]);
             if (buf instanceof NativeArrayBuffer) {
                 ((NativeArrayBuffer) buf).detach();
@@ -288,16 +326,16 @@ public class Test262SuiteTest {
         }
     }
 
-    private Scriptable buildScope(Context cx, Test262Case testCase, boolean interpretedMode) {
-        ScriptableObject scope = (ScriptableObject) cx.initSafeStandardObjects(new TopLevel());
+    private TopLevel buildScope(Context cx, Test262Case testCase, TestMode mode) {
+        TopLevel scope = cx.initSafeStandardObjects(new TopLevel());
 
         for (String harnessFile : testCase.harnessFiles) {
-            String harnessKey = harnessFile + '-' + interpretedMode;
+            String harnessKey = harnessFile + '-' + mode.keyPart();
             Script harnessScript =
                     HARNESS_SCRIPT_CACHE.computeIfAbsent(
                             harnessKey,
                             k -> {
-                                String harnessPath = testHarnessDir + harnessFile;
+                                String harnessPath = testHarnessDir + '/' + harnessFile;
                                 try (Reader reader = new FileReader(harnessPath)) {
                                     String script = Kit.readReader(reader);
 
@@ -307,7 +345,7 @@ public class Test262SuiteTest {
                                             "Error reading test file " + harnessPath, ioe);
                                 }
                             });
-            harnessScript.exec(cx, scope, scope);
+            harnessScript.exec(cx, scope, scope.getGlobalThis());
         }
 
         $262 proto = $262.init(cx, scope);
@@ -338,14 +376,15 @@ public class Test262SuiteTest {
             Test262Case testCase,
             boolean markedAsFailing) {
         try (Context cx = Context.enter()) {
-            cx.setInterpretedMode(testMode == TestMode.INTERPRETED);
             // Ensure maximum compatibility, including future strict mode and "const" checks
             cx.setLanguageVersion(Context.VERSION_ECMASCRIPT);
             cx.setGeneratingDebug(true);
 
+            testMode.setup(cx);
+
             boolean failedEarly = false;
             try {
-                Scriptable scope = buildScope(cx, testCase, testMode == TestMode.INTERPRETED);
+                TopLevel scope = buildScope(cx, testCase, testMode);
                 String str = testCase.source;
                 int line = 1;
                 if (useStrict) {
@@ -357,7 +396,7 @@ public class Test262SuiteTest {
                 Script caseScript = cx.compileString(str, testFilePath, line, null);
 
                 failedEarly = false; // not after this line
-                caseScript.exec(cx, scope, scope);
+                caseScript.exec(cx, scope, scope.getGlobalThis());
 
                 if (testCase.isNegative()) {
                     fail(
@@ -392,7 +431,7 @@ public class Test262SuiteTest {
                 }
 
                 try {
-                    assertEquals(ex.details(), testCase.expectedError, errorName);
+                    assertEquals(testCase.expectedError, errorName, ex.details());
                 } catch (AssertionError aex) {
                     if (markedAsFailing) return;
 
@@ -461,7 +500,12 @@ public class Test262SuiteTest {
 
                     if (!topLevelFolder.exists()) {
                         throw new RuntimeException(
-                                "Non-existing '" + path + "' at the line #" + lineNo);
+                                "Non-existing '"
+                                        + path
+                                        + "' at the line #"
+                                        + lineNo
+                                        + " topLevel = "
+                                        + topLevelFolder);
                     } else if (!topLevelFolder.isDirectory()) {
                         throw new RuntimeException(
                                 "Unexpected file '"
@@ -580,8 +624,18 @@ public class Test262SuiteTest {
         Map<File, String> failingFiles = new HashMap<File, String>();
         addTestFiles(testFiles, failingFiles);
 
+        var shards = Sharding.getSharding();
+        System.out.println("Sharding: " + shards);
+
+        int i = 0;
         fileLoop:
         for (File testFile : testFiles) {
+            if (shards != null) {
+                if (i++ % shards.total != shards.index) {
+                    continue;
+                }
+            }
+
             String caseShortPath = testDir.toPath().relativize(testFile.toPath()).toString();
             boolean markedAsFailing = failingFiles.containsKey(testFile);
             String comment = markedAsFailing ? failingFiles.get(testFile) : null;
@@ -647,7 +701,7 @@ public class Test262SuiteTest {
                 continue;
             }
 
-            for (TestMode testMode : new TestMode[] {TestMode.INTERPRETED, TestMode.COMPILED}) {
+            for (TestMode testMode : TestMode.valuesShouldRun()) {
                 if (!testCase.hasFlag(FLAG_ONLY_STRICT) || testCase.hasFlag(FLAG_RAW)) {
                     result.add(
                             new Object[] {
@@ -782,9 +836,67 @@ public class Test262SuiteTest {
     }
 
     private enum TestMode {
-        INTERPRETED,
-        COMPILED,
-        SKIPPED,
+        INTERPRETED(
+                "interpreted",
+                true,
+                false,
+                cx -> {
+                    cx.setEvaluationMethod(EvaluationMethod.Interpreter);
+                }),
+        COMPILED(
+                "compiled",
+                true,
+                false,
+                cx -> {
+                    cx.setEvaluationMethod(EvaluationMethod.Compiler);
+                }),
+        DEBUGGER_INTERPRETED(
+                "debugger",
+                true,
+                true,
+                cx -> {
+                    cx.setEvaluationMethod(EvaluationMethod.Interpreter);
+                    cx.setDebugger(new NoOpDebugger(), null);
+                }),
+        SKIPPED("skipped", false, false, cx -> {});
+
+        private final String keyPart;
+        private final boolean shouldRun;
+        private final boolean isDebug;
+        private final Consumer<Context> setup;
+
+        TestMode(String name, boolean shouldRun, boolean isDebug, Consumer<Context> setup) {
+            this.shouldRun = shouldRun;
+            this.isDebug = isDebug;
+            this.keyPart = name;
+            this.setup = setup;
+        }
+
+        public String keyPart() {
+            return keyPart;
+        }
+
+        public void setup(Context cx) {
+            setup.accept(cx);
+        }
+
+        public boolean shouldRun() {
+            return shouldRun && ((isDebug && debugEnabled) || (!isDebug && normalEnabled));
+        }
+
+        public String trackerName(boolean strict) {
+            return keyPart() + "-" + (strict ? "strict" : "non-strict");
+        }
+
+        public static TestMode[] valuesShouldRun() {
+            var values = new ArrayList<TestMode>();
+            for (var e : TestMode.values()) {
+                if (e.shouldRun()) {
+                    values.add(e);
+                }
+            }
+            return values.toArray(new TestMode[0]);
+        }
     }
 
     private static class TestResultTracker {
@@ -799,7 +911,7 @@ public class Test262SuiteTest {
         }
 
         private static String makeKey(TestMode mode, boolean useStrict) {
-            return mode.name().toLowerCase() + '-' + (useStrict ? "strict" : "non-strict");
+            return mode.trackerName(useStrict);
         }
 
         public void setExpectations(
@@ -853,37 +965,71 @@ public class Test262SuiteTest {
             }
 
             // failure on all optLevels in both strict and non-strict mode
-            if (modes.size() == 4) {
+            if (modes.size() == TestMode.values().length * 2 - 2) {
                 return "";
             }
 
             // simplify the output for some cases
             ArrayList<String> res = new ArrayList<>(modes);
-            if (res.contains("compiled-non-strict") && res.contains("interpreted-non-strict")) {
-                res.remove("compiled-non-strict");
-                res.remove("interpreted-non-strict");
+            if (containsAllModes(res, false)) {
+                removeAllModes(res, false);
                 res.add("non-strict");
             }
-            if (res.contains("compiled-strict") && res.contains("interpreted-strict")) {
-                res.remove("compiled-strict");
-                res.remove("interpreted-strict");
+            if (containsAllModes(res, true)) {
+                removeAllModes(res, true);
                 res.add("strict");
             }
-            if (res.contains("compiled-strict") && res.contains("compiled-non-strict")) {
-                res.remove("compiled-strict");
-                res.remove("compiled-non-strict");
-                res.add("compiled");
-            }
-            if (res.contains("interpreted-strict") && res.contains("interpreted-non-strict")) {
-                res.remove("interpreted-strict");
-                res.remove("interpreted-non-strict");
-                res.add("interpreted");
+
+            for (var mode : TestMode.values()) {
+                if (mode.shouldRun()) {
+                    if (containsAllStrictType(res, mode)) {
+                        removeAllStrictType(res, mode);
+                        res.add(mode.keyPart());
+                    }
+                }
             }
 
             if (res.size() > 1) {
                 return '{' + String.join(",", res) + '}';
             }
             return String.join(",", res);
+        }
+
+        public boolean containsAllStrictType(List<String> desc, TestMode mode) {
+            return desc.contains(mode.trackerName(false)) && desc.contains(mode.trackerName(true));
+        }
+
+        public void removeAllStrictType(List<String> desc, TestMode mode) {
+            desc.remove(mode.trackerName(false));
+            desc.remove(mode.trackerName(true));
+        }
+
+        public boolean containsAllModes(List<String> desc, boolean useStrict) {
+            for (var mode : TestMode.values()) {
+                if (mode.shouldRun) {
+                    if (!desc.contains(mode.trackerName(useStrict))) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        public boolean containsAllModes(List<String> desc) {
+            return containsAllModes(desc, true) && containsAllModes(desc, false);
+        }
+
+        public void removeAllModes(List<String> desc, boolean useStrict) {
+            for (var mode : TestMode.values()) {
+                if (mode.shouldRun) {
+                    desc.remove(mode.trackerName(useStrict));
+                }
+            }
+        }
+
+        public void removeAllModes(List<String> desc) {
+            removeAllModes(desc, true);
+            removeAllModes(desc, false);
         }
     }
 
@@ -1128,5 +1274,35 @@ public class Test262SuiteTest {
             }
             writer.write('\n');
         }
+    }
+
+    private static class NoOpDebugger implements Debugger {
+        @Override
+        public DebugFrame getFrame(Context cx, DebuggableScript fnOrScript) {
+            return new NoOpDebugFrame();
+        }
+
+        @Override
+        public void handleCompilationDone(Context cx, DebuggableScript fnOrScript, String source) {
+            // TODO Auto-generated method stub
+
+        }
+    }
+
+    private static class NoOpDebugFrame implements DebugFrame {
+        @Override
+        public void onDebuggerStatement(Context cx) {}
+
+        @Override
+        public void onEnter(Context cx, VarScope activation, Scriptable thisObj, Object[] args) {}
+
+        @Override
+        public void onExit(Context cx, boolean byThrow, Object resultOrException) {}
+
+        @Override
+        public void onExceptionThrown(Context cx, Throwable ex) {}
+
+        @Override
+        public void onLineChange(Context cx, int lineNumber) {}
     }
 }

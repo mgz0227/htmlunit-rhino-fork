@@ -16,6 +16,7 @@ import java.io.PrintWriter;
 import java.io.Reader;
 import java.io.StringWriter;
 import java.io.Writer;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayDeque;
@@ -28,13 +29,14 @@ import java.util.Set;
 import java.util.TimeZone;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
-import org.mozilla.classfile.ClassFileWriter.ClassFileFormatException;
+import org.mozilla.classfile.ClassFileWriter.ClassSizeException;
 import org.mozilla.javascript.ast.AstRoot;
 import org.mozilla.javascript.ast.ScriptNode;
 import org.mozilla.javascript.debug.DebuggableScript;
 import org.mozilla.javascript.debug.Debugger;
 import org.mozilla.javascript.lc.type.TypeInfo;
 import org.mozilla.javascript.lc.type.TypeInfoFactory;
+import org.mozilla.javascript.sourcemap.SourceMapper;
 import org.mozilla.javascript.xml.XMLLib;
 
 /**
@@ -439,7 +441,10 @@ public class Context implements Closeable {
         }
         this.factory = factory;
         version = VERSION_ES6;
-        interpretedMode = codegenClass == null;
+        evaluationMethod =
+                EvaluationMethod.Compiler.isValid()
+                        ? EvaluationMethod.Compiler
+                        : EvaluationMethod.Interpreter;
         maximumInterpreterStackDepth = Integer.MAX_VALUE;
     }
 
@@ -571,7 +576,7 @@ public class Context implements Closeable {
     }
 
     /**
-     * Call {@link Callable#call(Context cx, Scriptable scope, Scriptable thisObj, Object[] args)}
+     * Call {@link Callable#call(Context cx, VarScope scope, Scriptable thisObj, Object[] args)}
      * using the Context instance associated with the current thread. If no Context is associated
      * with the thread, then {@link ContextFactory#makeContext()} will be called to construct new
      * Context instance. The instance will be temporary associated with the thread during call to
@@ -584,10 +589,10 @@ public class Context implements Closeable {
      */
     public static Object call(
             ContextFactory factory,
-            final Callable callable,
-            final Scriptable scope,
-            final Scriptable thisObj,
-            final Object[] args) {
+            Callable callable,
+            VarScope scope,
+            Scriptable thisObj,
+            Object[] args) {
         if (factory == null) {
             factory = ContextFactory.getGlobal();
         }
@@ -1082,7 +1087,7 @@ public class Context implements Closeable {
      *
      * @return the initialized scope
      */
-    public final ScriptableObject initStandardObjects() {
+    public final TopLevel initStandardObjects() {
         return initStandardObjects(null, false);
     }
 
@@ -1105,7 +1110,7 @@ public class Context implements Closeable {
      *
      * @return the initialized scope
      */
-    public final ScriptableObject initSafeStandardObjects() {
+    public final TopLevel initSafeStandardObjects() {
         return initSafeStandardObjects(null, false);
     }
 
@@ -1125,7 +1130,7 @@ public class Context implements Closeable {
      * @return the initialized scope. The method returns the value of the scope argument if it is
      *     not null or newly allocated scope object which is an instance {@link ScriptableObject}.
      */
-    public final Scriptable initStandardObjects(ScriptableObject scope) {
+    public final TopLevel initStandardObjects(TopLevel scope) {
         return initStandardObjects(scope, false);
     }
 
@@ -1151,7 +1156,7 @@ public class Context implements Closeable {
      * @return the initialized scope. The method returns the value of the scope argument if it is
      *     not null or newly allocated scope object which is an instance {@link ScriptableObject}.
      */
-    public final Scriptable initSafeStandardObjects(ScriptableObject scope) {
+    public final TopLevel initSafeStandardObjects(TopLevel scope) {
         return initSafeStandardObjects(scope, false);
     }
 
@@ -1178,7 +1183,7 @@ public class Context implements Closeable {
      *     not null or newly allocated scope object.
      * @since 1.4R3
      */
-    public ScriptableObject initStandardObjects(ScriptableObject scope, boolean sealed) {
+    public TopLevel initStandardObjects(TopLevel scope, boolean sealed) {
         return ScriptRuntime.initStandardObjects(this, scope, sealed);
     }
 
@@ -1211,13 +1216,34 @@ public class Context implements Closeable {
      *     not null or newly allocated scope object.
      * @since 1.7.6
      */
-    public ScriptableObject initSafeStandardObjects(ScriptableObject scope, boolean sealed) {
+    public TopLevel initSafeStandardObjects(TopLevel scope, boolean sealed) {
         return ScriptRuntime.initSafeStandardObjects(this, scope, sealed);
     }
 
     /** Get the singleton object that represents the JavaScript Undefined value. */
     public static Object getUndefinedValue() {
         return Undefined.instance;
+    }
+
+    /**
+     * Compile and execute a script described by {@code spec} in the given scope.
+     *
+     * @return the result of evaluating the source, or null if compilation produced no script
+     */
+    public final Object evaluateScript(ScriptCompileSpec spec, VarScope scope) {
+        Script script = compileScript(spec);
+        if (script != null) {
+            return script.exec(
+                    this, scope, ScriptableObject.getTopLevelScope(scope).getGlobalThis());
+        }
+        return null;
+    }
+
+    /**
+     * @see #evaluateScript(ScriptCompileSpec, VarScope)
+     */
+    public final Object evaluateScript(ScriptCompileSpec.Builder spec, VarScope scope) {
+        return evaluateScript(spec.build(), scope);
     }
 
     /**
@@ -1237,12 +1263,14 @@ public class Context implements Closeable {
      * @see org.mozilla.javascript.SecurityController
      */
     public final Object evaluateString(
-            Scriptable scope, String source, String sourceName, int lineno, Object securityDomain) {
-        Script script = compileString(source, sourceName, lineno, securityDomain);
-        if (script != null) {
-            return script.exec(this, scope, scope);
-        }
-        return null;
+            VarScope scope, String source, String sourceName, int lineno, Object securityDomain) {
+        return evaluateScript(
+                ScriptCompileSpec.fromSource(source)
+                        .sourceName(sourceName)
+                        .lineno(lineno)
+                        .securityDomain(securityDomain)
+                        .build(),
+                scope);
     }
 
     /**
@@ -1261,19 +1289,21 @@ public class Context implements Closeable {
      * @exception IOException if an IOException was generated by the Reader
      */
     public final Object evaluateReader(
-            Scriptable scope, Reader in, String sourceName, int lineno, Object securityDomain)
+            VarScope scope, Reader in, String sourceName, int lineno, Object securityDomain)
             throws IOException {
-        Script script = compileReader(in, sourceName, lineno, securityDomain);
-        if (script != null) {
-            return script.exec(this, scope, scope);
-        }
-        return null;
+        return evaluateScript(
+                ScriptCompileSpec.fromReader(in)
+                        .sourceName(sourceName)
+                        .lineno(lineno)
+                        .securityDomain(securityDomain)
+                        .build(),
+                scope);
     }
 
     /**
      * Execute script that may pause execution by capturing a continuation. Caller must be prepared
      * to catch a ContinuationPending exception and resume execution by calling {@link
-     * #resumeContinuation(Object, Scriptable, Object)}.
+     * #resumeContinuation(Object, VarScope, Object)}.
      *
      * @param script The script to execute. Script must have been compiled with interpreted mode
      *     (optimization level -1)
@@ -1282,7 +1312,7 @@ public class Context implements Closeable {
      *     #captureContinuation()}
      * @since 1.7 Release 2
      */
-    public Object executeScriptWithContinuations(Script script, Scriptable scope)
+    public Object executeScriptWithContinuations(Script script, VarScope scope)
             throws ContinuationPending {
         if (!(script instanceof JSScript)
                 || !(((JSScript) script).getCode() instanceof InterpreterData)) {
@@ -1294,7 +1324,7 @@ public class Context implements Closeable {
         return callFunctionWithContinuations((JSScript) script, scope);
     }
 
-    public Object executeScriptWithContinuations(Callable callable, Scriptable scope)
+    public Object executeScriptWithContinuations(Callable callable, VarScope scope)
             throws ContinuationPending {
         if (!(callable instanceof JSFunction)
                 || !(((JSFunction) callable).getCode() instanceof InterpreterData)) {
@@ -1309,7 +1339,7 @@ public class Context implements Closeable {
     /**
      * Call function that may pause execution by capturing a continuation. Caller must be prepared
      * to catch a ContinuationPending exception and resume execution by calling {@link
-     * #resumeContinuation(Object, Scriptable, Object)}.
+     * #resumeContinuation(Object, VarScope, Object)}.
      *
      * @param script The script to call. The script must have been compiled with interpreted mode
      *     (optimization level -1)
@@ -1318,7 +1348,7 @@ public class Context implements Closeable {
      *     #captureContinuation()}
      * @since 1.7 Release 2
      */
-    public Object callFunctionWithContinuations(Script script, Scriptable scope)
+    public Object callFunctionWithContinuations(Script script, VarScope scope)
             throws ContinuationPending {
         if (!(script instanceof JSScript)
                 || !(script.getDescriptor().getCode() instanceof InterpreterData)) {
@@ -1334,10 +1364,11 @@ public class Context implements Closeable {
         // Annotate so we can check later to ensure no java code in
         // intervening frames
         isContinuationsTopCall = true;
-        return ScriptRuntime.doTopCall(script, this, scope, scope, isTopLevelStrict);
+        return ScriptRuntime.doTopCall(
+                script, this, scope, Undefined.SCRIPTABLE_UNDEFINED, isStrict);
     }
 
-    public Object callFunctionWithContinuations(Callable callable, Scriptable scope, Object[] args)
+    public Object callFunctionWithContinuations(Callable callable, VarScope scope, Object[] args)
             throws ContinuationPending {
         if (!(callable instanceof JSFunction)
                 || !(((JSFunction) callable).getDescriptor().getCode()
@@ -1355,13 +1386,13 @@ public class Context implements Closeable {
         // intervening frames
         isContinuationsTopCall = true;
         return ScriptRuntime.doTopCall(
-                (JSFunction) callable, this, scope, scope, args, isTopLevelStrict);
+                (JSFunction) callable, this, scope, Undefined.SCRIPTABLE_UNDEFINED, args, isStrict);
     }
 
     /**
      * Capture a continuation from the current execution. The execution must have been started via a
-     * call to {@link #executeScriptWithContinuations(Script, Scriptable)} or {@link
-     * #callFunctionWithContinuations(Callable, Scriptable, Object[])}. This implies that the code
+     * call to {@link #executeScriptWithContinuations(Script, VarScope)} or {@link
+     * #callFunctionWithContinuations(Callable, VarScope, Object[])}. This implies that the code
      * calling this method must have been called as a function from the JavaScript script. Also,
      * there cannot be any non-JavaScript code between the JavaScript frames (e.g., a call to
      * eval()). The ContinuationPending exception returned must be thrown.
@@ -1386,7 +1417,7 @@ public class Context implements Closeable {
      * @throws ContinuationPending if another continuation is captured before the code terminates
      * @since 1.7 Release 2
      */
-    public Object resumeContinuation(Object continuation, Scriptable scope, Object functionResult)
+    public Object resumeContinuation(Object continuation, VarScope scope, Object functionResult)
             throws ContinuationPending {
         Object[] args = {functionResult};
         return Interpreter.restartContinuation(
@@ -1464,22 +1495,13 @@ public class Context implements Closeable {
             Object securityDomain,
             Consumer<CompilerEnvirons> compilerEnvironsProcessor)
             throws IOException {
-        if (lineno < 0) {
-            // For compatibility IllegalArgumentException can not be thrown here
-            lineno = 0;
-        }
-
-        return (Script)
-                compileImpl(
-                        null,
-                        Kit.readReader(in),
-                        sourceName,
-                        lineno,
-                        securityDomain,
-                        false,
-                        null,
-                        null,
-                        compilerEnvironsProcessor);
+        return compileScript(
+                ScriptCompileSpec.fromReader(in)
+                        .sourceName(sourceName)
+                        .lineno(lineno)
+                        .securityDomain(securityDomain)
+                        .compilerEnvironsProcessor(compilerEnvironsProcessor)
+                        .build());
     }
 
     /**
@@ -1499,10 +1521,6 @@ public class Context implements Closeable {
      */
     public final Script compileString(
             String source, String sourceName, int lineno, Object securityDomain) {
-        if (lineno < 0) {
-            // For compatibility IllegalArgumentException can not be thrown here
-            lineno = 0;
-        }
         return compileString(source, null, null, sourceName, lineno, securityDomain, null);
     }
 
@@ -1514,17 +1532,15 @@ public class Context implements Closeable {
             int lineno,
             Object securityDomain,
             Consumer<CompilerEnvirons> compilerEnvironsProcessor) {
-        return (Script)
-                compileImpl(
-                        null,
-                        source,
-                        sourceName,
-                        lineno,
-                        securityDomain,
-                        false,
-                        compiler,
-                        compilationErrorReporter,
-                        compilerEnvironsProcessor);
+        return compileScript(
+                ScriptCompileSpec.fromSource(source)
+                        .sourceName(sourceName)
+                        .lineno(lineno)
+                        .securityDomain(securityDomain)
+                        .compiler(compiler)
+                        .compilationErrorReporter(compilationErrorReporter)
+                        .compilerEnvironsProcessor(compilerEnvironsProcessor)
+                        .build());
     }
 
     /**
@@ -1544,29 +1560,50 @@ public class Context implements Closeable {
      * @see org.mozilla.javascript.Function
      */
     public final Function compileFunction(
-            Scriptable scope, String source, String sourceName, int lineno, Object securityDomain) {
+            VarScope scope, String source, String sourceName, int lineno, Object securityDomain) {
         return compileFunction(scope, source, null, null, sourceName, lineno, securityDomain);
     }
 
     protected Function compileFunction(
-            Scriptable scope,
+            VarScope scope,
             String source,
             Evaluator compiler,
             ErrorReporter compilationErrorReporter,
             String sourceName,
             int lineno,
             Object securityDomain) {
-        return (Function)
-                compileImpl(
-                        scope,
-                        source,
-                        sourceName,
-                        lineno,
-                        securityDomain,
-                        true,
-                        compiler,
-                        compilationErrorReporter,
-                        null);
+        return compileFunction(
+                FunctionCompileSpec.fromSource(source, scope)
+                        .sourceName(sourceName)
+                        .lineno(lineno)
+                        .securityDomain(securityDomain)
+                        .compiler(compiler)
+                        .compilationErrorReporter(compilationErrorReporter)
+                        .build());
+    }
+
+    /** Compile a script described by {@code spec}. */
+    public final Script compileScript(ScriptCompileSpec spec) {
+        return compileScriptImpl(spec);
+    }
+
+    /**
+     * @see #compileScript(ScriptCompileSpec)
+     */
+    public final Script compileScript(ScriptCompileSpec.Builder spec) {
+        return compileScriptImpl(spec.build());
+    }
+
+    /** Compile a function described by {@code spec}. */
+    public final Function compileFunction(FunctionCompileSpec spec) {
+        return compileFunctionImpl(spec);
+    }
+
+    /**
+     * @see #compileFunction(FunctionCompileSpec)
+     */
+    public final Function compileFunction(FunctionCompileSpec.Builder spec) {
+        return compileFunctionImpl(spec.build());
     }
 
     /**
@@ -1629,10 +1666,14 @@ public class Context implements Closeable {
      * @param scope the scope to search for the constructor and to evaluate against
      * @return the new object
      */
-    public Scriptable newObject(Scriptable scope) {
+    public Scriptable newObject(VarScope scope) {
         NativeObject result = new NativeObject();
         ScriptRuntime.setBuiltinProtoAndParent(result, scope, TopLevel.Builtins.Object);
         return result;
+    }
+
+    public VarScope newVarEnv(VarScope parent) {
+        return new DeclarationScope(parent);
     }
 
     /**
@@ -1644,7 +1685,7 @@ public class Context implements Closeable {
      * @param constructorName the name of the constructor to call
      * @return the new object
      */
-    public Scriptable newObject(Scriptable scope, String constructorName) {
+    public Scriptable newObject(VarScope scope, String constructorName) {
         return newObject(scope, constructorName, ScriptRuntime.emptyArgs);
     }
 
@@ -1668,7 +1709,7 @@ public class Context implements Closeable {
      * @param args the array of arguments for the constructor
      * @return the new object
      */
-    public Scriptable newObject(Scriptable scope, String constructorName, Object[] args) {
+    public Scriptable newObject(VarScope scope, String constructorName, Object[] args) {
         return ScriptRuntime.newObject(this, scope, constructorName, args);
     }
 
@@ -1680,7 +1721,7 @@ public class Context implements Closeable {
      *     dynamically).
      * @return the new array object
      */
-    public Scriptable newArray(Scriptable scope, int length) {
+    public Scriptable newArray(VarScope scope, int length) {
         NativeArray result = new NativeArray(length);
         ScriptRuntime.setBuiltinProtoAndParent(result, scope, TopLevel.Builtins.Array);
         return result;
@@ -1694,7 +1735,7 @@ public class Context implements Closeable {
      *     JavaScript type and type of array should be exactly Object[], not SomeObjectSubclass[].
      * @return the new array object.
      */
-    public Scriptable newArray(Scriptable scope, Object[] elements) {
+    public Scriptable newArray(VarScope scope, Object[] elements) {
         if (elements.getClass().getComponentType() != ScriptRuntime.ObjectClass)
             throw new IllegalArgumentException();
         NativeArray result = new NativeArray(elements);
@@ -1773,16 +1814,16 @@ public class Context implements Closeable {
      * @param scope global scope containing constructors for Number, Boolean, and String
      * @return new JavaScript object
      */
-    public static Scriptable toObject(Object value, Scriptable scope) {
+    public static Scriptable toObject(Object value, VarScope scope) {
         return ScriptRuntime.toObject(scope, value);
     }
 
     /**
      * @deprecated
-     * @see #toObject(Object, Scriptable)
+     * @see #toObject(Object, VarScope)
      */
     @Deprecated
-    public static Scriptable toObject(Object value, Scriptable scope, Class<?> staticType) {
+    public static Scriptable toObject(Object value, VarScope scope, Class<?> staticType) {
         return ScriptRuntime.toObject(scope, value);
     }
 
@@ -1801,7 +1842,7 @@ public class Context implements Closeable {
      * JavaScript type will be string.
      *
      * <p>The rest of values will be wrapped as LiveConnect objects by calling {@link
-     * WrapFactory#wrap(Context cx, Scriptable scope, Object obj, Class staticType)} as in:
+     * WrapFactory#wrap(Context cx, VarScope scope, Object obj, Class staticType)} as in:
      *
      * <pre>
      *    Context cx = Context.getCurrentContext();
@@ -1812,7 +1853,7 @@ public class Context implements Closeable {
      * @param scope top scope object
      * @return value suitable to pass to any API that takes JavaScript values.
      */
-    public static Object javaToJS(Object value, Scriptable scope) {
+    public static Object javaToJS(Object value, VarScope scope) {
         return javaToJS(value, scope, null);
     }
 
@@ -1831,7 +1872,7 @@ public class Context implements Closeable {
      * JavaScript type will be string.
      *
      * <p>The rest of values will be wrapped as LiveConnect objects by calling {@link
-     * WrapFactory#wrap(Context cx, Scriptable scope, Object obj, Class staticType)} as in:
+     * WrapFactory#wrap(Context cx, VarScope scope, Object obj, Class staticType)} as in:
      *
      * <pre>
      *    return cx.getWrapFactory().wrap(cx, scope, value, null);
@@ -1842,7 +1883,7 @@ public class Context implements Closeable {
      * @param cx context to use for wrapping LiveConnect objects
      * @return value suitable to pass to any API that takes JavaScript values.
      */
-    public static Object javaToJS(Object value, Scriptable scope, Context cx) {
+    public static Object javaToJS(Object value, VarScope scope, Context cx) {
         if (value instanceof String
                 || value instanceof Number
                 || value instanceof Boolean
@@ -1917,8 +1958,8 @@ public class Context implements Closeable {
      * of {@link java.util.Map Map}, {@link java.util.Collection Collection}, or {@link
      * java.lang.Object Object[]}.
      *
-     * <p>Objects returned by the converter will converted with {@link #javaToJS(Object,
-     * Scriptable)} and then stringified themselves.
+     * <p>Objects returned by the converter will converted with {@link #javaToJS(Object, VarScope)}
+     * and then stringified themselves.
      *
      * @param javaToJSONConverter
      * @throws IllegalArgumentException if javaToJSONConverter is null
@@ -2012,15 +2053,15 @@ public class Context implements Closeable {
     /**
      * Get the current optimization level.
      *
-     * <p>The optimization level is expressed as an integer between -1 and 9. Rhino now has only one
-     * optimization level, and we will always return either -1 or 9 here.
+     * <p>The optimization level is expressed as an integer between -1 and 9. Rhino now has only a
+     * few optimization levels: -1 for Interpreter, and 9 for compiled mode.
      *
      * @since 1.3
-     * @deprecated As of 1.8.0, use {@link #isInterpretedMode()} instead.
+     * @deprecated As of 1.8.0, use {@link #getEvaluationMethod()} instead.
      */
     @Deprecated
     public final int getOptimizationLevel() {
-        return interpretedMode ? -1 : 9;
+        return evaluationMethod.level();
     }
 
     /**
@@ -2028,22 +2069,31 @@ public class Context implements Closeable {
      * bytecode, but runs much more slowly. Some platforms, notably Android, use this mode.
      */
     public final boolean isInterpretedMode() {
-        return interpretedMode;
+        return evaluationMethod != EvaluationMethod.Compiler;
+    }
+
+    /**
+     * Get the current evaluation method used for running JavaScript code.
+     *
+     * @return the current evaluation method
+     */
+    public final EvaluationMethod getEvaluationMethod() {
+        return evaluationMethod;
     }
 
     /**
      * Set the current optimization level.
      *
-     * <p>This function previously set multiple modes today. Any value less than zero sets up
-     * interpreted mode, and otherwise we run in compiled mode.
+     * <p>The optimization level determines which execution method Rhino uses: -2 for InterpreterV2,
+     * -1 for the original Interpreter, and 0-9 for compiled mode.
      *
      * @param optimizationLevel an integer indicating the level of optimization to perform
      * @since 1.3
-     * @deprecated As of 1.8.0, use {@link #setInterpretedMode(boolean)} instead.
+     * @deprecated As of 1.8.0, use {@link #setEvaluationMethod(EvaluationMethod)} instead.
      */
     @Deprecated
     public final void setOptimizationLevel(int optimizationLevel) {
-        setInterpretedMode(optimizationLevel < 0);
+        setEvaluationMethod(EvaluationMethod.forLevel(optimizationLevel));
     }
 
     /**
@@ -2052,8 +2102,21 @@ public class Context implements Closeable {
      * cannot generate bytecode.
      */
     public final void setInterpretedMode(boolean interpretedMode) {
+        if (interpretedMode) {
+            setEvaluationMethod(EvaluationMethod.Interpreter);
+        } else {
+            setEvaluationMethod(EvaluationMethod.Compiler);
+        }
+    }
+
+    /**
+     * Set the evaluation method used for running JavaScript code.
+     *
+     * @param evaluationMethod the evaluation method to use
+     */
+    public final void setEvaluationMethod(EvaluationMethod evaluationMethod) {
         if (sealed) onSealedMutation();
-        this.interpretedMode = interpretedMode;
+        this.evaluationMethod = evaluationMethod;
     }
 
     /**
@@ -2061,7 +2124,12 @@ public class Context implements Closeable {
      */
     @Deprecated
     public static boolean isValidOptimizationLevel(int optimizationLevel) {
-        return -1 <= optimizationLevel && optimizationLevel <= 9;
+        for (var e : EvaluationMethod.values()) {
+            if (e.level() == optimizationLevel) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -2073,7 +2141,7 @@ public class Context implements Closeable {
             return;
         }
         throw new IllegalArgumentException(
-                "Optimization level outside [-1..9]: " + optimizationLevel);
+                "Optimization level outside [-2..9]: " + optimizationLevel);
     }
 
     /**
@@ -2108,7 +2176,7 @@ public class Context implements Closeable {
      */
     public final void setMaximumInterpreterStackDepth(int max) {
         if (sealed) onSealedMutation();
-        if (!interpretedMode) {
+        if (evaluationMethod == EvaluationMethod.Compiler) {
             throw new IllegalStateException(
                     "Cannot set maximumInterpreterStackDepth outside interpreted mode");
         }
@@ -2235,7 +2303,7 @@ public class Context implements Closeable {
 
     /**
      * @deprecated
-     * @see ClassCache#get(Scriptable)
+     * @see ClassCache#get(VarScope)
      * @see ClassCache#setCachingEnabled(boolean)
      */
     @Deprecated
@@ -2321,10 +2389,8 @@ public class Context implements Closeable {
      *
      * @param featureIndex feature index to check
      * @return true if the {@code featureIndex} feature is turned on
-     * @see #FEATURE_NON_ECMA_GET_YEAR
      * @see #FEATURE_MEMBER_EXPR_AS_FUNCTION_NAME
      * @see #FEATURE_RESERVED_KEYWORD_AS_IDENTIFIER
-     * @see #FEATURE_TO_STRING_AS_SOURCE
      * @see #FEATURE_PARENT_PROTO_PROPRTIES
      * @see #FEATURE_E4X
      * @see #FEATURE_DYNAMIC_SCOPE
@@ -2566,33 +2632,86 @@ public class Context implements Closeable {
         return cx;
     }
 
-    protected Object compileImpl(
-            Scriptable scope,
+    protected Script compileScriptImpl(ScriptCompileSpec spec) {
+        Compiled<JSScript> compiled =
+                compileImpl(
+                        spec.getSource(),
+                        spec.getSourceName(),
+                        spec.getLineno(),
+                        spec.getSecurityDomain(),
+                        spec.getCompiler(),
+                        spec.getCompilationErrorReporter(),
+                        spec.getCompilerEnvironsProcessor(),
+                        spec.getSourceMapper(),
+                        false,
+                        Evaluator::compileScript);
+        return compiled.evaluator.createScriptObject(compiled.result, spec.getSecurityDomain());
+    }
+
+    protected Function compileFunctionImpl(FunctionCompileSpec spec) {
+        Compiled<JSFunction> compiled =
+                compileImpl(
+                        spec.getSource(),
+                        spec.getSourceName(),
+                        spec.getLineno(),
+                        spec.getSecurityDomain(),
+                        spec.getCompiler(),
+                        spec.getCompilationErrorReporter(),
+                        spec.getCompilerEnvironsProcessor(),
+                        spec.getSourceMapper(),
+                        true,
+                        Evaluator::compileFunction);
+        return compiled.evaluator.createFunctionObject(
+                this, spec.getScope(), compiled.result, spec.getSecurityDomain());
+    }
+
+    @FunctionalInterface
+    private interface CompileFn<T extends ScriptOrFn<T>> {
+        CompilationResult<T> compile(
+                Evaluator evaluator, CompilerEnvirons env, ScriptNode tree, String rawSource);
+    }
+
+    private static final class Compiled<T extends ScriptOrFn<T>> {
+        private final Evaluator evaluator;
+        private final CompilationResult<T> result;
+
+        private Compiled(Evaluator evaluator, CompilationResult<T> result) {
+            this.evaluator = evaluator;
+            this.result = result;
+        }
+    }
+
+    private <T extends ScriptOrFn<T>> Compiled<T> compileImpl(
             String sourceString,
             String sourceName,
             int lineno,
             Object securityDomain,
-            boolean returnFunction,
             Evaluator compiler,
             ErrorReporter compilationErrorReporter,
-            Consumer<CompilerEnvirons> compilerEnvironProcessor) {
+            Consumer<CompilerEnvirons> compilerEnvironProcessor,
+            SourceMapper sourceMapper,
+            boolean returnFunction,
+            CompileFn<T> compileFn) {
         if (sourceName == null) {
             sourceName = "unnamed script";
         }
+
         if (securityDomain != null && getSecurityController() == null) {
             throw new IllegalArgumentException(
                     "securityDomain should be null if setSecurityController() was never called");
         }
 
-        // scope should be given if and only if compiling function
-        if (!(scope == null ^ returnFunction)) Kit.codeBug();
-
         CompilerEnvirons compilerEnv = new CompilerEnvirons();
         compilerEnv.initFromContext(this);
         compilerEnv.setSecurityDomain(securityDomain);
+        if (sourceMapper != null) {
+            compilerEnv.setSourceMapper(sourceMapper);
+        }
+
         if (compilationErrorReporter == null) {
             compilationErrorReporter = compilerEnv.getErrorReporter();
         }
+
         if (compilerEnvironProcessor != null) {
             compilerEnvironProcessor.accept(compilerEnv);
         }
@@ -2606,14 +2725,14 @@ public class Context implements Closeable {
                         compilationErrorReporter,
                         returnFunction);
 
-        Object bytecode;
+        CompilationResult<T> result;
         try {
             if (compiler == null) {
                 compiler = createCompiler();
             }
 
-            bytecode = compiler.compile(compilerEnv, tree, sourceString, returnFunction);
-        } catch (ClassFileFormatException e) {
+            result = compileFn.compile(compiler, compilerEnv, tree, sourceString);
+        } catch (ClassSizeException e) {
             // we hit some class file limit, fall back to interpreter or report
 
             // we have to recreate the tree because the compile call might have changed the tree
@@ -2628,27 +2747,28 @@ public class Context implements Closeable {
                             returnFunction);
 
             compiler = createInterpreter();
-            bytecode = compiler.compile(compilerEnv, tree, sourceString, returnFunction);
+            result = compileFn.compile(compiler, compilerEnv, tree, sourceString);
         }
 
         if (debugger != null) {
             if (sourceString == null) Kit.codeBug();
-            DebuggableScript dscript = compiler.getDebuggableScript(bytecode);
+            DebuggableScript dscript = result.getDebuggableScript();
             if (dscript != null) {
-                notifyDebugger_r(this, dscript, sourceString);
+                String debugSource = sourceString;
+                SourceMapper mapper = compilerEnv.getSourceMapper();
+                if (mapper != null) {
+                    String original = mapper.getPrimarySourceContent();
+                    if (original != null) {
+                        debugSource = original;
+                    }
+                }
+                notifyDebugger_r(this, dscript, debugSource);
             } else {
                 throw new RuntimeException("NOT SUPPORTED");
             }
         }
 
-        Object result;
-        if (returnFunction) {
-            result = compiler.createFunctionObject(this, scope, bytecode, securityDomain);
-        } else {
-            result = compiler.createScriptObject(bytecode, securityDomain);
-        }
-
-        return result;
+        return new Compiled<>(compiler, result);
     }
 
     private ScriptNode parse(
@@ -2695,33 +2815,43 @@ public class Context implements Closeable {
         }
     }
 
-    private static Class<?> codegenClass =
+    @SuppressWarnings("unchecked")
+    private static final Class<? extends Evaluator> CodegenClass =
             ScriptRuntime.androidApi > 0
                     ? null
-                    : Kit.classOrNull("org.mozilla.javascript.optimizer.Codegen");
-    private static Class<?> interpreterClass =
-            Kit.classOrNull("org.mozilla.javascript.Interpreter");
+                    : (Class<? extends Evaluator>)
+                            Kit.classOrNull("org.mozilla.javascript.optimizer.Codegen");
+
+    @SuppressWarnings("unchecked")
+    private static final Class<? extends Evaluator> InterpreterClass =
+            (Class<? extends Evaluator>) Kit.classOrNull("org.mozilla.javascript.Interpreter");
 
     private Evaluator createCompiler() {
-        Evaluator result = null;
-        if (!interpretedMode && codegenClass != null) {
-            result = (Evaluator) Kit.newInstanceOrNull(codegenClass);
-        }
-        if (result == null) {
-            result = createInterpreter();
-        }
-        return result;
+        return evaluationMethod.createEvaluator();
     }
 
     static Evaluator createInterpreter() {
-        return (Evaluator) Kit.newInstanceOrNull(interpreterClass);
+        return EvaluationMethod.Interpreter.createEvaluator();
+    }
+
+    /**
+     * Get the appropriate interpreter evaluator based on the current evaluation method. This is
+     * used for stack trace generation and other interpreter-specific operations.
+     *
+     * @return the interpreter evaluator for the current evaluation method
+     */
+    Evaluator getInterpreterForCurrentMethod() {
+        if (evaluationMethod.isInterpreted()) {
+            return evaluationMethod.createEvaluator();
+        }
+        return EvaluationMethod.Interpreter.createEvaluator();
     }
 
     static String getSourcePositionFromStack(int[] linep) {
         Context cx = getCurrentContext();
         if (cx == null) return null;
         if (cx.lastInterpreterFrame != null) {
-            Evaluator evaluator = createInterpreter();
+            Evaluator evaluator = cx.getInterpreterForCurrentMethod();
             if (evaluator != null) return evaluator.getSourcePositionFromStack(cx, linep);
         }
 
@@ -2812,9 +2942,12 @@ public class Context implements Closeable {
         if (activationNames != null) activationNames.remove(name);
     }
 
+    public final void setIsStrictMode(boolean isStrict) {
+        this.isStrict = isStrict;
+    }
+
     public final boolean isStrictMode() {
-        return isTopLevelStrict
-                || (currentActivationCall != null && currentActivationCall.isStrict);
+        return isStrict;
     }
 
     public static boolean isCurrentContextStrict() {
@@ -2829,9 +2962,10 @@ public class Context implements Closeable {
     private boolean sealed;
     private Object sealKey;
 
-    Scriptable topCallScope;
+    TopLevel topCallScope;
     boolean isContinuationsTopCall;
     NativeCall currentActivationCall;
+    private boolean isStrict;
     XMLLib cachedXMLLib;
     BaseFunction typeErrorThrower;
 
@@ -2844,6 +2978,68 @@ public class Context implements Closeable {
 
     int version;
 
+    /** Enumeration of evaluation methods supported by Rhino. */
+    public enum EvaluationMethod {
+        /** Original bytecode-based interpreter. */
+        Interpreter(-1, true, InterpreterClass),
+        /** JVM bytecode compiler. */
+        Compiler(9, false, CodegenClass);
+
+        private final int optimizationLevel;
+        private final boolean isInterpreted;
+
+        @SuppressWarnings("Immutable")
+        private final Constructor<? extends Evaluator> constructor;
+
+        private EvaluationMethod(
+                int level, boolean isInterpreted, Class<? extends Evaluator> clazz) {
+            this.optimizationLevel = level;
+            this.isInterpreted = isInterpreted;
+            Constructor<? extends Evaluator> ctor = null;
+            if (clazz != null) {
+                try {
+                    ctor = clazz.getDeclaredConstructor();
+                } catch (NoSuchMethodException e) {
+                }
+            }
+            this.constructor = ctor;
+        }
+
+        public int level() {
+            return optimizationLevel;
+        }
+
+        public boolean isInterpreted() {
+            return isInterpreted;
+        }
+
+        public boolean isValid() {
+            return constructor != null;
+        }
+
+        public Evaluator createEvaluator() {
+            if (constructor == null) {
+                return null;
+            }
+            try {
+                return constructor.newInstance();
+            } catch (InstantiationException
+                    | IllegalAccessException
+                    | InvocationTargetException x) {
+            }
+            return null;
+        }
+
+        public static EvaluationMethod forLevel(int level) {
+            for (var e : EvaluationMethod.values()) {
+                if (e.optimizationLevel == level) {
+                    return e;
+                }
+            }
+            throw new IllegalStateException("Unknown optimization level.");
+        }
+    }
+
     private SecurityController securityController;
     private boolean hasClassShutter;
     private ClassShutter classShutter;
@@ -2855,7 +3051,8 @@ public class Context implements Closeable {
     private boolean generatingDebugChanged;
     private boolean generatingSource = true;
     boolean useDynamicScope;
-    private boolean interpretedMode;
+    // interpreted mode defaulted to false, so we keep compatibility with that.
+    private EvaluationMethod evaluationMethod = EvaluationMethod.Compiler;
     private int maximumInterpreterStackDepth;
     private WrapFactory wrapFactory;
     Debugger debugger;
@@ -2874,7 +3071,7 @@ public class Context implements Closeable {
 
     // For the interpreter to store the last frame for error reports
     // etc. Previous frames can all be derived from this.
-    Object lastInterpreterFrame;
+    public ACallFrame<?, ?> lastInterpreterFrame;
 
     // For instruction counting (interpreter only)
     int instructionCount;
@@ -2888,6 +3085,4 @@ public class Context implements Closeable {
 
     // Generate an observer count on compiled code
     boolean generateObserverCount = false;
-
-    boolean isTopLevelStrict;
 }

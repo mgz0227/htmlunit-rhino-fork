@@ -40,7 +40,7 @@ import org.mozilla.javascript.ScriptableObject.LambdaSetterFunction;
  *                       .withMethod(PROTO, "valueOf", 0, NativeBoolean::js_valueOf)
  *                       .build();
  *
- *   static void init(Scriptable scope, boolean sealed) {
+ *   static void init(VarScope scope, boolean sealed) {
  *       // Boolean is an unusual object in that the prototype is itself a Boolean
  *       var constructor = DESCRIPTOR.buildConstructor(scope, new NativeBoolean(false), sealed);
  *   }
@@ -55,7 +55,7 @@ import org.mozilla.javascript.ScriptableObject.LambdaSetterFunction;
  * <p>Convenience methods are provided to create aliases of properties ({@link
  * Builder#aliss(String)}) and simple values which are truly independent of the context ({@link
  * Builder#value(Object)}), along with variants that also accept attribute flags. More complex cases
- * can be handled by methods similar to {@link NativeArray#makeUnscopables(Context, Scriptable,
+ * can be handled by methods similar to {@link NativeArray#makeUnscopables(Context, VarScope,
  * ScriptableObject)}.
  */
 public class ClassDescriptor {
@@ -87,7 +87,7 @@ public class ClassDescriptor {
             this.attributes = attributes;
         }
 
-        abstract void makeProp(Context cx, Scriptable scope, ScriptableObject object);
+        abstract void makeProp(Context cx, VarScope scope, ScriptableObject object);
     }
 
     private static class LambdaGetSetPropDesc extends PropDesc {
@@ -105,17 +105,60 @@ public class ClassDescriptor {
         }
 
         @Override
-        void makeProp(Context cx, Scriptable scope, ScriptableObject obj) {
+        void makeProp(Context cx, VarScope scope, ScriptableObject obj) {
             if (name instanceof String) {
-                obj.defineProperty(cx, (String) name, getter, setter, attributes);
+                obj.defineProperty(cx, scope, (String) name, getter, setter, attributes);
             } else {
-                obj.defineProperty(cx, (SymbolKey) name, getter, setter, attributes);
+                obj.defineProperty(cx, scope, (SymbolKey) name, getter, setter, attributes);
+            }
+        }
+    }
+
+    private static class BuiltInPropDesc<T extends ScriptableObject> extends PropDesc {
+        private final BuiltInSlot.Getter<T> getter;
+        private final BuiltInSlot.Setter<T> setter;
+        private final BuiltInSlot.AttributeSetter<T> attrUpdater;
+        private final BuiltInSlot.PropDescriptionSetter<T> propDescSetter;
+
+        BuiltInPropDesc(
+                Object name,
+                BuiltInSlot.Getter<T> getter,
+                BuiltInSlot.Setter<T> setter,
+                int attributes) {
+            this(name, getter, setter, null, null, attributes);
+        }
+
+        BuiltInPropDesc(
+                Object name,
+                BuiltInSlot.Getter<T> getter,
+                BuiltInSlot.Setter<T> setter,
+                BuiltInSlot.AttributeSetter<T> attrUpdater,
+                BuiltInSlot.PropDescriptionSetter<T> propDescSetter,
+                int attributes) {
+            super(name, attributes);
+            this.getter = getter;
+            this.setter = setter;
+            this.attrUpdater = attrUpdater;
+            this.propDescSetter = propDescSetter;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        void makeProp(Context cx, VarScope scope, ScriptableObject obj) {
+            if (attrUpdater == null && propDescSetter == null) {
+                ScriptableObject.defineBuiltInProperty((T) obj, name, attributes, getter, setter);
+            } else if (propDescSetter == null) {
+                ScriptableObject.defineBuiltInProperty(
+                        (T) obj, obj, attributes, getter, setter, attrUpdater);
+            } else {
+                ScriptableObject.defineBuiltInProperty(
+                        (T) obj, name, attributes, getter, setter, attrUpdater, propDescSetter);
             }
         }
     }
 
     public interface ValueCreator {
-        DescriptorInfo apply(Context cx, Scriptable Scope, ScriptableObject obj);
+        DescriptorInfo apply(Context cx, VarScope scope, ScriptableObject obj);
     }
 
     private static class CreateValuePropDesc extends PropDesc {
@@ -127,7 +170,7 @@ public class ClassDescriptor {
         }
 
         @Override
-        void makeProp(Context cx, Scriptable scope, ScriptableObject obj) {
+        void makeProp(Context cx, VarScope scope, ScriptableObject obj) {
             if (name instanceof String) {
                 obj.defineOwnProperty(cx, name, creator.apply(cx, scope, obj), false);
             } else {
@@ -157,12 +200,12 @@ public class ClassDescriptor {
 
     /** Build a constructor from this descriptor. */
     public JSFunction buildConstructor(
-            Context cx, Scriptable scope, ScriptableObject proto, boolean sealed) {
+            Context cx, VarScope scope, ScriptableObject proto, boolean sealed) {
         return buildConstructor(cx, scope, proto, sealed, (c, s) -> {});
     }
 
     public ScriptableObject populateGlobal(
-            Context cx, Scriptable scope, ScriptableObject global, boolean sealed) {
+            Context cx, VarScope scope, ScriptableObject global, boolean sealed) {
         var objProto = ScriptableObject.getObjectPrototype(scope);
         global.setPrototype(objProto);
         ScriptableObject.defineProperty(
@@ -194,7 +237,7 @@ public class ClassDescriptor {
      */
     public JSFunction buildConstructor(
             Context cx,
-            Scriptable scope,
+            VarScope scope,
             ScriptableObject proto,
             boolean sealed,
             BiConsumer<Context, JSFunction> customStep) {
@@ -203,7 +246,6 @@ public class ClassDescriptor {
         if (proto != null) {
             ctor.setPrototypeProperty(proto);
             ctor.setPrototypePropertyAttributes(ctorDesc.stdAttrs);
-            proto.setParentScope(scope);
             proto.put("constructor", proto, ctor);
         }
 
@@ -593,8 +635,6 @@ public class ClassDescriptor {
          * @param dest destination for this property
          * @param name the property's name.
          * @param getter should usually be a static method reference that can be cast as a {@link
-         *     LambdaGetterFunction}. This is what will be executed when the property is got..
-         * @param getter should usually be a static method reference that can be cast as a {@link
          *     LambdaSetterFunction}. This is what will be executed when the property is set..
          * @param attributes the attributes for the property on the prototype
          * @return this {@link Builder}
@@ -620,6 +660,26 @@ public class ClassDescriptor {
                 LambdaSetterFunction setter,
                 int attributes) {
             dest.get(this).props.add(new LambdaGetSetPropDesc(name, getter, setter, attributes));
+            return this;
+        }
+
+        public <T extends ScriptableObject> Builder withProp(
+                Destination dest,
+                String name,
+                BuiltInSlot.Getter<T> getter,
+                BuiltInSlot.Setter<T> setter,
+                int attributes) {
+            dest.get(this).props.add(new BuiltInPropDesc<>(name, getter, setter, attributes));
+            return this;
+        }
+
+        public <T extends ScriptableObject> Builder withProp(
+                Destination dest,
+                SymbolKey name,
+                BuiltInSlot.Getter<T> getter,
+                BuiltInSlot.Setter<T> setter,
+                int attributes) {
+            dest.get(this).props.add(new BuiltInPropDesc<>(name, getter, setter, attributes));
             return this;
         }
 
@@ -722,7 +782,7 @@ public class ClassDescriptor {
 
     private static class BuiltInJSCode extends JSCode<JSFunction> implements Serializable {
 
-        private static final long serialVersionUID = 2691205302914111400L;
+        private static final long serialVersionUID = -346984669839537590L;
 
         private final JSCodeExec<JSFunction> exec;
         private final JSCodeResume<JSFunction> resume;
@@ -737,7 +797,7 @@ public class ClassDescriptor {
                 Context cx,
                 JSFunction executableObject,
                 Object newTarget,
-                Scriptable scope,
+                VarScope scope,
                 Object thisObj,
                 Object[] args) {
             return exec.execute(cx, executableObject, newTarget, scope, thisObj, args);
@@ -748,7 +808,7 @@ public class ClassDescriptor {
                 Context cx,
                 JSFunction executableObject,
                 Object state,
-                Scriptable scope,
+                VarScope scope,
                 int operation,
                 Object value) {
             return resume.resume(cx, executableObject, state, scope, operation, value);
