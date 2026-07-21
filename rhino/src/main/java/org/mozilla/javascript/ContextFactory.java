@@ -279,6 +279,14 @@ public class ContextFactory {
 
             case Context.FEATURE_HTMLUNIT_ARRAY_SORT_COMPERATOR_ACCEPTS_BOOL:
                 return false;
+
+            // legado
+            case Context.FEATURE_LEGADO_DYNAMIC_DEFAULT_THIS:
+                return false;
+
+            case Context.FEATURE_LEGADO_DYNAMIC_EVAL_REALM:
+                return false;
+            // end legado
         }
         // It is a bug to call the method with unknown featureIndex
         throw new IllegalArgumentException(String.valueOf(featureIndex));

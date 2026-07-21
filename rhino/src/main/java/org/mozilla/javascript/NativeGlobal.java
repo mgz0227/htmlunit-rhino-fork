@@ -458,6 +458,16 @@ public class NativeGlobal implements Serializable {
      */
     private static Object js_eval(
             Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
+        // legado
+        if (cx.hasFeature(Context.FEATURE_LEGADO_DYNAMIC_EVAL_REALM)
+                && ScriptRuntime.hasTopCall(cx)) {
+            TopLevel dynTop = ScriptRuntime.getTopCallScope(cx);
+            ScriptableObject dynGlobal = dynTop.getGlobalThis();
+            if (dynGlobal != null) {
+                return ScriptRuntime.evalSpecial(cx, dynTop, dynGlobal, args, "eval code", 1);
+            }
+        }
+        // end legado
         TopLevel top = ScriptableObject.getTopLevelScope(f.getDeclarationScope());
         return ScriptRuntime.evalSpecial(cx, top, top.getGlobalThis(), args, "eval code", 1);
     }

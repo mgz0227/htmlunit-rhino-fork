@@ -488,13 +488,29 @@ public class BaseFunction extends ScriptableObject implements Function {
 
     private static Scriptable js_constructor(
             Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
-        return jsConstructor(cx, f.getDeclarationScope(), args, false);
+        // legado
+        return jsConstructor(cx, dynamicConstructorScope(cx, f), args, false);
+        // end legado
     }
 
     private static Scriptable js_gen_constructor(
             Context cx, JSFunction f, Object nt, VarScope s, Object thisObj, Object[] args) {
-        return jsConstructor(cx, f.getDeclarationScope(), args, true);
+        // legado
+        return jsConstructor(cx, dynamicConstructorScope(cx, f), args, true);
+        // end legado
     }
+
+    // legado: with FEATURE_LEGADO_DYNAMIC_EVAL_REALM, functions created via the Function
+    // constructor close over the current top call scope (dynamic, pre-realm-separation
+    // behavior) instead of the intrinsic's declaration realm
+    private static VarScope dynamicConstructorScope(Context cx, JSFunction f) {
+        if (cx.hasFeature(Context.FEATURE_LEGADO_DYNAMIC_EVAL_REALM)
+                && ScriptRuntime.hasTopCall(cx)) {
+            return ScriptRuntime.getTopCallScope(cx);
+        }
+        return f.getDeclarationScope();
+    }
+    // end legado
 
     private static BaseFunction realFunction(Object thisObj, String functionName) {
         if (thisObj == null) {

@@ -390,6 +390,19 @@ public class Context implements Closeable {
      */
     public static final int FEATURE_LEGADO_DYNAMIC_DEFAULT_THIS = 120;
 
+    /**
+     * Special to legado's fork.
+     *
+     * <p>Indirect {@code eval} calls (through the eval function object) and the {@code Function}
+     * constructor resolve their global environment from the current top call scope (dynamic,
+     * pre-realm-separation Rhino behavior) instead of the intrinsic's declaration realm. Scripts
+     * evaluated against per-call scopes chained to shared realms rely on eval'ed code seeing the
+     * per-call execution bindings.
+     *
+     * <p>By default {@link #hasFeature(int)} returns false.
+     */
+    public static final int FEATURE_LEGADO_DYNAMIC_EVAL_REALM = 121;
+
     public static final String languageVersionProperty = "language version";
     public static final String errorReporterProperty = "error reporter";
 
