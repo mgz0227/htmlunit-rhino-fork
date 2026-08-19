@@ -13,6 +13,7 @@ import java.io.Serial;
 import java.lang.reflect.AccessibleObject;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.MalformedParameterizedTypeException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.security.AccessControlContext;
@@ -344,7 +345,9 @@ class JavaMembers {
                                     Method registered = registerMethod(map, method);
                                     // We don't want to replace the deprecated method here
                                     // because it is not available on Android.
-                                    if (includePrivate && !registered.isAccessible()) {
+                                    if (includePrivate
+                                            && registered != null
+                                            && !registered.isAccessible()) {
                                         registered.setAccessible(true);
                                     }
                                 }
@@ -397,10 +400,22 @@ class JavaMembers {
     }
 
     static Method registerMethod(Map<MethodSignature, Method> map, Method method) {
-        MethodSignature sig = new MethodSignature(method);
-        // Array may contain methods with same parameter signature but different return value!
-        // (which is allowed in bytecode, but not in JLS) we will take the best method
-        return map.merge(sig, method, JavaMembers::getMoreConcreteMethod);
+        try {
+            method.getGenericParameterTypes();
+            method.getGenericReturnType();
+            MethodSignature sig = new MethodSignature(method);
+            // Array may contain methods with same parameter signature but different return value!
+            // (which is allowed in bytecode, but not in JLS) we will take the best method
+            return map.merge(sig, method, JavaMembers::getMoreConcreteMethod);
+        } catch (LinkageError | TypeNotPresentException | MalformedParameterizedTypeException e) {
+            Context.reportWarning(
+                    "Could not resolve signature of method "
+                            + method.getName()
+                            + " of class "
+                            + method.getDeclaringClass().getName()
+                            + "; skipping it.");
+            return null;
+        }
     }
 
     private static Method getMoreConcreteMethod(Method oldValue, Method newValue) {
